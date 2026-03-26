@@ -1,0 +1,1483 @@
+<!DOCTYPE html>
+<html lang="en" style="color-scheme: dark;">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Timegrapher">
+<title>Watch Timegrapher</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%230a0a0a' stroke='%234a9eff' stroke-width='6'/><circle cx='50' cy='50' r='3' fill='%234a9eff'/><line x1='50' y1='50' x2='28' y2='35' stroke='%234a9eff' stroke-width='4' stroke-linecap='round'/><line x1='50' y1='50' x2='78' y2='29' stroke='%2300c853' stroke-width='3' stroke-linecap='round'/><line x1='50' y1='50' x2='25' y2='78' stroke='%23ff1744' stroke-width='1.5' stroke-linecap='round'/></svg>">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  ::-webkit-scrollbar { height: 6px; width: 6px; }
+  ::-webkit-scrollbar-track { background: #0a0a0a; }
+  ::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #4a4a6a; }
+  * { scrollbar-width: thin; scrollbar-color: #2a2a4a #0a0a0a; }
+
+  body {
+    font-family: 'Consolas', 'SF Mono', 'Courier New', monospace;
+    background: #0a0a0a;
+    color: #d0d0d0;
+    font-size: 13px;
+    min-height: 100vh;
+    min-height: -webkit-fill-available;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    overscroll-behavior: none;
+  }
+
+  /* --- Header bar --- */
+  .header {
+    width: 100%;
+    background: #1a1a2e;
+    border-bottom: 1px solid #333;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .header-title {
+    font-size: 14px;
+    font-weight: bold;
+    color: #e0e0e0;
+    letter-spacing: 0.5px;
+  }
+  .header-accent {
+    color: #4a9eff;
+    font-size: 11px;
+    opacity: 0.7;
+  }
+
+  /* --- Open in browser overlay --- */
+  .webview-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: #0a0a0a;
+    color: #d0d0d0;
+    padding: 40px 24px;
+    padding: max(40px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-family: 'Consolas', 'SF Mono', 'Courier New', monospace;
+  }
+  .webview-overlay.hidden { display: none; }
+  .webview-overlay h1 {
+    font-size: 16px;
+    margin-bottom: 16px;
+    color: #ff6644;
+    font-weight: bold;
+  }
+  .webview-overlay p {
+    font-size: 13px;
+    line-height: 1.7;
+    max-width: 340px;
+    color: #888;
+    margin-bottom: 12px;
+  }
+  .webview-overlay .steps {
+    text-align: left;
+    max-width: 340px;
+    margin: 16px 0;
+  }
+  .webview-overlay .steps .step {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #ccc;
+  }
+  .webview-overlay .steps .step-num {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    background: #4a9eff;
+    color: #000;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 11px;
+  }
+  .webview-overlay .share-icon,
+  .webview-overlay .dots-icon {
+    display: inline-block;
+    width: 16px; height: 16px;
+    vertical-align: middle;
+    margin: 0 2px;
+  }
+
+  /* --- Main content --- */
+  .main {
+    width: 100%;
+    max-width: 560px;
+    padding: 12px 16px;
+    padding: max(12px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+
+  .card {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 4px;
+    padding: 14px 16px;
+    width: 100%;
+    margin-bottom: 10px;
+  }
+
+  .card h2 {
+    font-size: 10px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 10px;
+    font-weight: normal;
+  }
+
+  label {
+    display: block;
+    color: #777;
+    font-size: 11px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  select {
+    width: 100%;
+    padding: 6px 8px;
+    background: #0d0d1a;
+    border: 1px solid #333;
+    border-radius: 2px;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 13px;
+    margin-bottom: 10px;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 5 5-5' stroke='%23666' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 28px;
+    cursor: pointer;
+  }
+  select:focus { border-color: #4a9eff; outline: none; }
+
+  input[type="range"] {
+    width: 100%;
+    margin-bottom: 8px;
+    height: 28px;
+    background: transparent;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    background: #2a2a4a;
+    border-radius: 2px;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #4a9eff;
+    border-radius: 50%;
+    border: none;
+    margin-top: -6px;
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-track {
+    height: 4px;
+    background: #2a2a4a;
+    border-radius: 2px;
+    border: none;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #4a9eff;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+  }
+
+  .range-row { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
+  .range-row input { flex: 1; margin-bottom: 0; }
+  .range-val { color: #4a9eff; font-size: 12px; min-width: 28px; text-align: right; }
+
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  button {
+    flex: 1;
+    min-width: 100px;
+    min-height: 36px;
+    padding: 8px 14px;
+    border: 1px solid #444;
+    border-radius: 2px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: normal;
+    cursor: pointer;
+    transition: background 0.15s;
+    -webkit-appearance: none;
+    touch-action: manipulation;
+    background: #1e1e3a;
+    color: #ccc;
+  }
+  button:hover { background: #2a2a50; }
+
+  .btn-mic { border-color: #4a9eff; color: #6af; background: #1a2a4a; }
+  .btn-mic:hover { background: #253560; }
+  .btn-mic:active { filter: brightness(0.85); }
+  .btn-mic.recording { border-color: #e55; color: #e55; background: #3a1a1a; animation: pulse 1.5s infinite; }
+  .btn-file { border-color: #555; color: #aaa; }
+  .btn-file:hover { background: #252540; color: #ddd; }
+  .btn-reset { border-color: #444; color: #888; font-size: 11px; min-height: 32px; padding: 6px 12px; }
+  .btn-copy { border-color: #2a6; color: #3c8; font-size: 11px; min-height: 32px; padding: 6px 12px; }
+  .btn-copy:hover { background: #1a3a2a; }
+  .btn-copy.copied { background: #2a6; color: #000; border-color: #2a6; }
+  .btn-clear { border: none; background: transparent; color: #555; font-size: 11px; min-height: 32px; padding: 6px 12px; min-width: 60px; }
+  .btn-clear:hover { color: #e55; background: transparent; }
+
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(238, 85, 85, 0.3); }
+    50% { box-shadow: 0 0 0 6px rgba(238, 85, 85, 0); }
+  }
+
+  input[type="file"] { display: none; }
+
+  .viz {
+    width: 100%;
+    height: 80px;
+    background: #0a0a0a;
+    border: 1px solid #222;
+    border-radius: 2px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+
+  .viz canvas { width: 100%; height: 100%; display: block; }
+
+  .results-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .result-box {
+    background: #0a0a0a;
+    border: 1px solid #222;
+    border-radius: 2px;
+    padding: 10px;
+    text-align: center;
+  }
+
+  .result-box.wide { grid-column: 1 / -1; }
+
+  .result-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+  .result-value { font-size: 20px; font-weight: bold; color: #4a9eff; }
+  .result-value.good { color: #00c853; }
+  .result-value.warn { color: #ffab00; }
+  .result-value.bad { color: #ff1744; }
+  .result-unit { font-size: 10px; color: #555; }
+
+  .tick-dot-strip {
+    width: 100%;
+    height: 50px;
+    background: #0a0a0a;
+    border: 1px solid #222;
+    border-radius: 2px;
+    margin-bottom: 10px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .tick-dot-strip canvas { width: 100%; height: 100%; display: block; }
+
+  .status { text-align: center; color: #666; font-size: 11px; margin-top: 6px; }
+  .status.active { color: #4a9eff; }
+
+  .tip {
+    text-align: center;
+    color: #555;
+    font-size: 11px;
+    margin-top: 8px;
+    line-height: 1.6;
+  }
+
+  .level-meter {
+    width: 100%;
+    height: 4px;
+    background: #1a1a2e;
+    border-radius: 2px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+  .level-meter-bar {
+    height: 100%;
+    width: 0%;
+    background: #4a9eff;
+    border-radius: 2px;
+    transition: width 0.05s linear;
+  }
+
+  .threshold-info {
+    font-size: 10px;
+    color: #555;
+    text-align: center;
+    margin-bottom: 6px;
+  }
+
+  /* --- Results log --- */
+  .result-entry {
+    background: #0a0a0a;
+    border: 1px solid #222;
+    border-radius: 2px;
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    transition: border-color 0.15s;
+  }
+  .result-entry:hover { border-color: #333; }
+  .result-entry-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 4px;
+  }
+  .result-entry-name {
+    font-weight: bold;
+    font-size: 13px;
+    color: #e0e0e0;
+  }
+  .result-entry-rate {
+    font-size: 16px;
+    font-weight: bold;
+  }
+  .result-entry-rate.good { color: #00c853; }
+  .result-entry-rate.warn { color: #ffab00; }
+  .result-entry-rate.bad { color: #ff1744; }
+  .result-entry-details {
+    font-size: 11px;
+    color: #666;
+    line-height: 1.6;
+  }
+  .result-entry-note {
+    font-size: 10px;
+    color: #555;
+    font-style: italic;
+    margin-top: 3px;
+  }
+
+  .pos { color: #00c853; }
+  .neg { color: #ff1744; }
+
+  @media (max-width: 400px) {
+    .card { padding: 10px 12px; }
+    .results-grid { grid-template-columns: 1fr; }
+    .result-box.wide { grid-column: 1; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Full-screen overlay: visible by default, hidden by JS in capable browsers -->
+<div class="webview-overlay" id="webviewOverlay">
+  <h1>Open in Safari</h1>
+  <p id="overlayMsg">This app needs Safari to access the microphone and analyze audio files.</p>
+  <div class="steps" id="overlaySteps">
+    <p style="margin:8px 0 4px;font-size:12px;color:#888;">iOS does not allow opening local files in Safari directly. To use this app:</p>
+    <div class="step"><span class="step-num">1</span><span>Ask the sender for a <strong>link</strong> instead of a file attachment</span></div>
+    <div class="step"><span class="step-num">2</span><span>Open the link in <strong>Safari</strong> — everything will work</span></div>
+    <p style="margin:10px 0 0;font-size:11px;color:#666;">Or use a desktop browser (Chrome, Edge, Firefox) where local files work fine.</p>
+  </div>
+  <div class="steps" id="overlayStepsGmail" style="display:none;">
+    <p style="margin:8px 0 4px;font-size:12px;color:#888;">Gmail attachments can't open in Safari on iOS. To use this app:</p>
+    <div class="step"><span class="step-num">1</span><span>Ask the sender for a <strong>link</strong> instead of a file attachment</span></div>
+    <div class="step"><span class="step-num">2</span><span>Open the link in <strong>Safari</strong> — everything will work</span></div>
+    <p style="margin:10px 0 0;font-size:11px;color:#666;">Or use a desktop browser (Chrome, Edge, Firefox) where local files work fine.</p>
+  </div>
+</div>
+
+<div class="header">
+  <span class="header-title">WATCH TIMEGRAPHER</span>
+  <span class="header-accent">// mechanical watch accuracy</span>
+</div>
+
+<div class="main">
+
+<!-- Settings -->
+<div class="card" id="mainApp">
+  <h2>Settings</h2>
+  <label for="bph">Beat Rate (BPH)</label>
+  <select id="bph">
+    <option value="18000">18,000 bph (2.5 Hz)</option>
+    <option value="21600">21,600 bph (3 Hz)</option>
+    <option value="25200">25,200 bph (3.5 Hz)</option>
+    <option value="28800" selected>28,800 bph (4 Hz)</option>
+    <option value="36000">36,000 bph (5 Hz)</option>
+  </select>
+
+  <label for="sensitivity">Mic Sensitivity</label>
+  <div class="range-row">
+    <input type="range" id="sensitivity" min="1" max="100" value="80">
+    <span class="range-val" id="sensVal">80</span>
+  </div>
+  <div class="threshold-info" id="threshInfo"></div>
+</div>
+
+<!-- Controls -->
+<div class="card">
+  <h2>Input</h2>
+  <label>Signal Level</label>
+  <div class="level-meter"><div class="level-meter-bar" id="levelBar"></div></div>
+  <div class="viz"><canvas id="waveCanvas"></canvas></div>
+  <div class="btn-row">
+    <button class="btn-mic" id="micBtn">Start Microphone</button>
+    <button class="btn-file" id="fileBtn">Upload Audio</button>
+    <input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.m4a,.ogg,.aac,.caf" multiple>
+  </div>
+  <p class="tip" id="tipText">
+    Phone: place caseback on mic, tap Start. Desktop: use contact/piezo mic.<br>
+    Record 15+ sec in a quiet environment. Select multiple files to compare watches.
+  </p>
+</div>
+
+<!-- Live mic timing strip + results (shown during mic recording) -->
+<div class="card" id="timingCard" style="display:none;">
+  <h2>Timing Diagram</h2>
+  <div class="tick-dot-strip"><canvas id="dotCanvas"></canvas></div>
+  <div class="btn-row" style="justify-content:center;">
+    <button class="btn-reset" id="resetBtn">Reset</button>
+  </div>
+</div>
+
+<div class="card" id="resultsCard" style="display:none;">
+  <h2>Results</h2>
+  <div class="results-grid">
+    <div class="result-box wide">
+      <div class="result-label">Rate</div>
+      <div class="result-value" id="rateVal">--</div>
+      <div class="result-unit">seconds / day</div>
+    </div>
+    <div class="result-box">
+      <div class="result-label">Beat Error</div>
+      <div class="result-value" id="beatErrVal">--</div>
+      <div class="result-unit">ms</div>
+    </div>
+    <div class="result-box">
+      <div class="result-label">Amplitude</div>
+      <div class="result-value" id="ampVal">--</div>
+      <div class="result-unit">estimated &deg;</div>
+    </div>
+    <div class="result-box">
+      <div class="result-label">Ticks Detected</div>
+      <div class="result-value" id="tickCountVal">--</div>
+      <div class="result-unit">ticks</div>
+    </div>
+    <div class="result-box">
+      <div class="result-label">Avg Interval</div>
+      <div class="result-value" id="avgIntVal">--</div>
+      <div class="result-unit">ms</div>
+    </div>
+  </div>
+  <p class="status" id="statusText"></p>
+</div>
+
+<!-- Results log (file uploads accumulate here) -->
+<div class="card" id="logCard" style="display:none;">
+  <h2>Results Log</h2>
+  <div id="logEntries"></div>
+  <div class="btn-row" style="margin-top:10px; justify-content:center;">
+    <button class="btn-copy" id="copyBtn">Copy Results</button>
+    <button class="btn-clear" id="clearLogBtn">Clear</button>
+  </div>
+</div>
+
+</div><!-- /.main -->
+
+<script>
+const $ = id => document.getElementById(id);
+
+// --- Environment check ---
+(function checkEnvironment() {
+  const hasGUM = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  const hasAudioCtx = !!(window.AudioContext || window.webkitAudioContext);
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  // Detect known iOS in-app browsers / WebViews
+  const isGmail = /GSA\//.test(ua);
+  const isWebView = /FBAN|FBAV|Instagram|Twitter|Line\/|Snapchat|LinkedIn|GSA\//.test(ua);
+
+  if (!isIOS) {
+    if (hasGUM && hasAudioCtx && !isWebView) $('webviewOverlay').classList.add('hidden');
+    return;
+  }
+
+  // Show Gmail-specific instructions if in Gmail
+  if (isGmail) {
+    $('overlayMsg').textContent = 'Gmail cannot access the microphone. Open this file in Safari for full functionality.';
+    $('overlaySteps').style.display = 'none';
+    $('overlayStepsGmail').style.display = '';
+    return; // keep overlay visible
+  }
+
+  // Show overlay for any other known WebView
+  if (isWebView) return;
+
+  const isSafari = /Safari\//.test(ua) && !/CriOS|FxiOS|OPiOS|EdgiOS/.test(ua);
+  const isChrome = /CriOS/.test(ua);
+  const isFirefox = /FxiOS/.test(ua);
+
+  // Additional WKWebView heuristic: real Safari has Safari/ without other browser tokens,
+  // but WKWebView may also claim Safari/. Check for missing __safari_reader__ or
+  // use feature detection: WKWebView lacks the download attribute on anchors in older iOS
+  if ((isSafari || isChrome || isFirefox) && hasGUM && hasAudioCtx) {
+    $('webviewOverlay').classList.add('hidden');
+  }
+})();
+
+// --- State ---
+let audioCtx = null;
+let micStream = null;
+let sourceNode = null;
+let filterNode = null;
+let analyserNode = null;
+let isRecording = false;
+let ticks = [];
+let tickAmplitudes = [];
+const ANALYSER_SIZE = 4096;
+
+let lastTickTime = 0;
+let cooldownUntil = 0;
+let noiseRMS = 0;
+let wakeLock = null;
+
+// Results log for file uploads
+const resultsLog = [];
+
+// --- Elements ---
+const micBtn = $('micBtn');
+const fileBtn = $('fileBtn');
+const fileInput = $('fileInput');
+const bphSelect = $('bph');
+const sensSlider = $('sensitivity');
+const sensValEl = $('sensVal');
+const waveCanvas = $('waveCanvas');
+const waveCtx = waveCanvas.getContext('2d');
+const dotCanvas = $('dotCanvas');
+const dotCtx = dotCanvas.getContext('2d');
+const resetBtn = $('resetBtn');
+const levelBar = $('levelBar');
+const threshInfo = $('threshInfo');
+
+function updateThreshDisplay() {
+  sensValEl.textContent = sensSlider.value;
+  const thr = getThreshold();
+  const mult = getMultiplier();
+  threshInfo.textContent = `Threshold: ${thr.toFixed(4)} (${mult.toFixed(1)}x noise floor)`;
+}
+sensSlider.oninput = updateThreshDisplay;
+updateThreshDisplay();
+
+// --- Canvas sizing ---
+function sizeCanvas(canvas) {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = Math.round(rect.width * devicePixelRatio);
+  canvas.height = Math.round(rect.height * devicePixelRatio);
+}
+window.addEventListener('resize', () => { sizeCanvas(waveCanvas); sizeCanvas(dotCanvas); });
+setTimeout(() => { sizeCanvas(waveCanvas); sizeCanvas(dotCanvas); }, 100);
+
+// --- Threshold / sensitivity ---
+function getMultiplier() {
+  const s = sensSlider.value / 100;
+  return 3 + (1 - s) * 12;
+}
+
+function getThreshold() {
+  return Math.max(0.002, noiseRMS * getMultiplier());
+}
+
+function getExpectedInterval() {
+  return 3600 / parseInt(bphSelect.value);
+}
+
+function getMinTickGap() {
+  return getExpectedInterval() * 0.4;
+}
+
+// --- Waveform + tick detection via rAF polling ---
+let timeDomainBuf = null;
+let animFrame = null;
+let lastProcessedTime = 0;
+let lastResultsUpdate = 0;
+
+function processAndDraw() {
+  if (!analyserNode || !isRecording) return;
+
+  const w = waveCanvas.width, h = waveCanvas.height;
+  waveCtx.fillStyle = '#0d1220';
+  waveCtx.fillRect(0, 0, w, h);
+
+  if (!timeDomainBuf) timeDomainBuf = new Float32Array(analyserNode.fftSize);
+  analyserNode.getFloatTimeDomainData(timeDomainBuf);
+
+  waveCtx.strokeStyle = '#00d4ff';
+  waveCtx.lineWidth = 1.5 * devicePixelRatio;
+  waveCtx.beginPath();
+  const step = w / timeDomainBuf.length;
+  for (let i = 0; i < timeDomainBuf.length; i++) {
+    const x = i * step;
+    const y = (1 - timeDomainBuf[i]) * h / 2;
+    i === 0 ? waveCtx.moveTo(x, y) : waveCtx.lineTo(x, y);
+  }
+  waveCtx.stroke();
+
+  let maxLevel = 0;
+  const absSamples = [];
+  for (let i = 0; i < timeDomainBuf.length; i++) {
+    const a = Math.abs(timeDomainBuf[i]);
+    if (a > maxLevel) maxLevel = a;
+    if (i % 4 === 0) absSamples.push(a);
+  }
+  absSamples.sort((a, b) => a - b);
+  const medianAbs = absSamples[Math.floor(absSamples.length * 0.5)];
+  const bufNoise = medianAbs * 1.48;
+  noiseRMS = noiseRMS === 0 ? bufNoise : noiseRMS * 0.9 + bufNoise * 0.1;
+
+  const thr = getThreshold();
+  const pct = Math.min(100, maxLevel * 300);
+  levelBar.style.width = pct + '%';
+  levelBar.style.background = maxLevel > thr ? '#00e676' : '#00d4ff';
+
+  detectTicksInBuffer(timeDomainBuf, audioCtx.sampleRate);
+
+  const now = performance.now();
+  if (now - lastResultsUpdate > 250) {
+    lastResultsUpdate = now;
+    updateThreshDisplay();
+    updateLiveResults();
+    drawDots();
+  }
+
+  animFrame = requestAnimationFrame(processAndDraw);
+}
+
+function detectTicksInBuffer(samples, sampleRate) {
+  const threshold = getThreshold();
+  const minGap = getMinTickGap();
+  const currentTime = audioCtx.currentTime;
+  const bufDuration = samples.length / sampleRate;
+  const bufStartTime = currentTime - bufDuration;
+  const newStartTime = Math.max(bufStartTime, lastProcessedTime);
+  const startSample = Math.max(0, Math.floor((newStartTime - bufStartTime) * sampleRate));
+  lastProcessedTime = currentTime;
+
+  for (let i = startSample; i < samples.length; i++) {
+    const absVal = Math.abs(samples[i]);
+    if (absVal > threshold) {
+      const sampleTime = bufStartTime + (i / sampleRate);
+      if (sampleTime - lastTickTime >= minGap && sampleTime > cooldownUntil) {
+        let peak = absVal;
+        const lookAhead = Math.min(128, samples.length - i);
+        let peakIdx = i;
+        for (let j = 1; j < lookAhead; j++) {
+          if (Math.abs(samples[i + j]) > peak) {
+            peak = Math.abs(samples[i + j]);
+            peakIdx = i + j;
+          }
+        }
+        const peakTime = bufStartTime + (peakIdx / sampleRate);
+        ticks.push(peakTime);
+        tickAmplitudes.push(peak);
+        lastTickTime = peakTime;
+        cooldownUntil = peakTime + minGap * 0.6;
+        i = peakIdx + Math.floor(minGap * sampleRate * 0.3);
+      }
+    }
+  }
+}
+
+// --- Tick detection on a sample buffer (for file analysis) ---
+function detectTicksInSamples(samples, sr, threshold, minGap) {
+  const tickTimes = [], tickAmps = [];
+  let lastTick = -minGap, cooldown = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const absVal = Math.abs(samples[i]);
+    if (absVal > threshold) {
+      const t = i / sr;
+      if (t - lastTick >= minGap && t > cooldown) {
+        let peak = absVal, peakIdx = i;
+        const lookAhead = Math.min(128, samples.length - i);
+        for (let j = 1; j < lookAhead; j++) {
+          if (Math.abs(samples[i + j]) > peak) { peak = Math.abs(samples[i + j]); peakIdx = i + j; }
+        }
+        const peakTime = peakIdx / sr;
+        tickTimes.push(peakTime);
+        tickAmps.push(peak);
+        lastTick = peakTime;
+        cooldown = peakTime + minGap * 0.6;
+        i = peakIdx + Math.floor(minGap * sr * 0.3);
+      }
+    }
+  }
+  return { tickTimes, tickAmps };
+}
+
+// --- Analyze file: peak detection with iterative median refinement ---
+// Uses increased minGap (0.7x) to suppress false between-tick detections,
+// then iteratively narrows the interval filter to converge on the true rate.
+function analyzeFile(samples, sr, fileNoiseRMS, expectedInterval) {
+  const minGap = expectedInterval * 0.7; // suppress false detections between real ticks
+  const detections = [];
+
+  for (const mult of [3, 4, 5, 6, 7, 8, 10, 12]) {
+    const threshold = Math.max(0.002, fileNoiseRMS * mult);
+    const det = detectTicksInSamples(samples, sr, threshold, minGap);
+    if (det.tickTimes.length < 4) continue;
+
+    // Sub-sample refinement: energy centroid for consistent tick timing
+    for (let t = 0; t < det.tickTimes.length; t++) {
+      const c = Math.round(det.tickTimes[t] * sr);
+      const hw = 48; // half-window: 1ms at 48kHz
+      let swt = 0, sw = 0;
+      for (let j = Math.max(0, c - hw); j <= Math.min(samples.length - 1, c + hw); j++) {
+        const w = samples[j] * samples[j];
+        swt += j * w; sw += w;
+      }
+      if (sw > 0) det.tickTimes[t] = swt / sw / sr;
+    }
+
+    const intervals = [];
+    for (let i = 1; i < det.tickTimes.length; i++)
+      intervals.push(det.tickTimes[i] - det.tickTimes[i - 1]);
+
+    for (let n = 1; n <= 3; n++) {
+      const target = expectedInterval * n;
+
+      // Iterative median refinement: 3 passes narrowing the window
+      let center = target;
+      let window = 0.003; // ±3ms
+      let clean = [];
+
+      for (let pass = 0; pass < 3; pass++) {
+        clean = intervals.filter(v => Math.abs(v - center) <= window);
+        if (clean.length < 5) break;
+        clean.sort((a, b) => a - b);
+        const mid = Math.floor(clean.length / 2);
+        center = clean.length % 2 === 0 ? (clean[mid - 1] + clean[mid]) / 2 : clean[mid];
+        window = Math.max(0.0005, window * 0.5); // halve window each pass
+      }
+
+      if (clean.length < 5) continue;
+
+      const perBeat = center / n;
+      const rate = (expectedInterval / perBeat - 1) * 86400;
+      const pct = clean.length / intervals.length;
+      detections.push({ mult, n, clean: clean.length, total: intervals.length, pct, rate, det });
+    }
+  }
+
+  if (detections.length === 0) return { result: null, debug: 'no valid detections' };
+
+  // Group by N, prefer lowest N with enough high-quality data
+  const byN = {};
+  for (const d of detections) {
+    if (!byN[d.n]) byN[d.n] = [];
+    byN[d.n].push(d);
+  }
+
+  let useN = null;
+  for (const n of [1, 2, 3]) {
+    if (byN[n] && byN[n].length >= 3) { useN = n; break; }
+  }
+  // If N=1 was selected but all detections have low clean%, prefer N=2 if available
+  if (useN === 1 && byN[1]) {
+    const bestPct = Math.max(...byN[1].map(d => d.pct));
+    if (bestPct < 0.4 && byN[2] && byN[2].length >= 2) useN = 2;
+  }
+  if (useN === null) {
+    // Fallback: prefer N with best max clean%
+    let bestPct = 0;
+    for (const n of Object.keys(byN)) {
+      const maxPct = Math.max(...byN[n].map(d => d.pct));
+      if (maxPct > bestPct) { bestPct = maxPct; useN = parseInt(n); }
+    }
+  }
+
+  const allForN = byN[useN];
+  // Weighted median: sort by rate, accumulate clean% weights, pick rate at half-weight
+  const sorted = allForN.slice().sort((a, b) => a.rate - b.rate);
+  const totalWeight = sorted.reduce((s, d) => s + d.pct, 0);
+  let cumWeight = 0;
+  let medianRate = sorted[0].rate;
+  for (const d of sorted) {
+    cumWeight += d.pct;
+    if (cumWeight >= totalWeight / 2) { medianRate = d.rate; break; }
+  }
+
+  // Find detection closest to median rate
+  let bestDet = allForN[0];
+  let bestDist = Infinity;
+  for (const d of allForN) {
+    const dist = Math.abs(d.rate - medianRate);
+    if (dist < bestDist) { bestDist = dist; bestDet = d; }
+  }
+
+  // Beat error: measure tick-tock asymmetry from consecutive interval pairs
+  let beatError = 0;
+  const tt = bestDet.det.tickTimes;
+  const target = expectedInterval * bestDet.n;
+  const pairs = [];
+  for (let i = 2; i < tt.length; i++) {
+    const a = tt[i - 1] - tt[i - 2];
+    const b = tt[i] - tt[i - 1];
+    if (Math.abs(a - target) < 0.003 && Math.abs(b - target) < 0.003) {
+      pairs.push(Math.abs(a - b));
+    }
+  }
+  if (pairs.length >= 2) {
+    pairs.sort((a, b) => a - b);
+    beatError = pairs[Math.floor(pairs.length / 2)] * 1000 / bestDet.n;
+  }
+
+  const tickTimes = bestDet.det.tickTimes;
+  const tickAmps = bestDet.det.tickAmps;
+  const avgAmp = tickAmps.reduce((a, b) => a + b, 0) / tickAmps.length;
+  const ampDeg = Math.min(330, Math.max(150, 150 + avgAmp * 1800));
+  const duration = tickTimes[tickTimes.length - 1] - tickTimes[0];
+  const avgInterval = expectedInterval / (1 + medianRate / 86400);
+
+  // Hodges-Lehmann rate: computed once on the best detection's intervals.
+  // Unbiased for bimodal tick-tock distributions (selective beat dropout).
+  // Used by windowed analysis; single-pass uses medianRate instead.
+  let hlRate = medianRate; // fallback
+  const hlIntervals = [];
+  for (let i = 1; i < tickTimes.length; i++)
+    hlIntervals.push(tickTimes[i] - tickTimes[i - 1]);
+  const hlTarget = expectedInterval * bestDet.n;
+  let hlCenter = hlTarget;
+  let hlWindow = 0.003;
+  for (let pass = 0; pass < 3; pass++) {
+    const hlClean = hlIntervals.filter(v => Math.abs(v - hlCenter) <= hlWindow);
+    if (hlClean.length < 5) break;
+    hlClean.sort((a, b) => a - b);
+    const pw = [];
+    for (let i = 0; i < hlClean.length; i++)
+      for (let j = i; j < hlClean.length; j++)
+        pw.push((hlClean[i] + hlClean[j]) / 2);
+    pw.sort((a, b) => a - b);
+    hlCenter = pw[Math.floor(pw.length / 2)];
+    hlWindow = Math.max(0.001, hlWindow * 0.5);
+  }
+  hlRate = (expectedInterval / (hlCenter / bestDet.n) - 1) * 86400;
+
+  const rateList = allForN.map(d => `${d.mult}x:${d.rate > 0 ? '+' : ''}${d.rate.toFixed(1)}(${(d.pct*100).toFixed(0)}%)`).join(' ');
+  const allNs = Object.keys(byN).map(n => `N=${n}(${byN[n].length})`).join(' ');
+
+  return {
+    result: {
+      rate: medianRate, hlRate, beatError, ampDeg, avgInterval,
+      tickMultiple: bestDet.n, tickCount: tickTimes.length,
+      cleanCount: bestDet.clean, duration
+    },
+    debug: `N=${useN} (${allNs}), [${rateList}]`
+  };
+}
+
+// --- Windowed file analysis: split longer recordings into overlapping windows ---
+// Each window gets its own local noise floor, analyzed independently, results combined.
+function analyzeFileWindowed(samples, sr, expectedInterval) {
+  const duration = samples.length / sr;
+  const winSec = 10;   // 10-second analysis windows
+  const stepSec = 5;   // 5-second step (50% overlap)
+
+  // Short recordings: single-window analysis (avoids splitting into noisy sub-windows)
+  if (duration < 20) {
+    const fileAbs = [];
+    for (let i = 0; i < samples.length; i += 4) fileAbs.push(Math.abs(samples[i]));
+    fileAbs.sort((a, b) => a - b);
+    const fileNoiseRMS = fileAbs[Math.floor(fileAbs.length * 0.5)] * 1.48;
+    return analyzeFile(samples, sr, fileNoiseRMS, expectedInterval);
+  }
+
+  // Build windows
+  const windows = [];
+  for (let startSec = 0; startSec + winSec <= duration; startSec += stepSec) {
+    const s0 = Math.floor(startSec * sr);
+    const s1 = Math.min(Math.floor((startSec + winSec) * sr), samples.length);
+    const winSamples = samples.subarray(s0, s1);
+
+    // Local noise floor for this window
+    const winAbs = [];
+    for (let i = 0; i < winSamples.length; i += 4) winAbs.push(Math.abs(winSamples[i]));
+    winAbs.sort((a, b) => a - b);
+    const winNoise = winAbs[Math.floor(winAbs.length * 0.5)] * 1.48;
+
+    const result = analyzeFile(winSamples, sr, winNoise, expectedInterval);
+    if (result.result) {
+      windows.push({
+        rate: result.result.hlRate,  // HL rate: unbiased for tick-tock dropout
+        beatError: result.result.beatError,
+        tickCount: result.result.tickCount,
+        cleanCount: result.result.cleanCount,
+        tickMultiple: result.result.tickMultiple,
+        duration: result.result.duration,
+        ampDeg: result.result.ampDeg,
+        avgInterval: result.result.avgInterval,
+        quality: result.result.cleanCount / Math.max(1, result.result.tickCount),
+        debug: result.debug
+      });
+    }
+  }
+
+  if (windows.length === 0) {
+    // Fallback to global analysis
+    const fileAbs = [];
+    for (let i = 0; i < samples.length; i += 4) fileAbs.push(Math.abs(samples[i]));
+    fileAbs.sort((a, b) => a - b);
+    const fileNoiseRMS = fileAbs[Math.floor(fileAbs.length * 0.5)] * 1.48;
+    return analyzeFile(samples, sr, fileNoiseRMS, expectedInterval);
+  }
+
+  // Quality gate: discard windows with low clean% (unreliable HL estimates)
+  const qualityMin = 0.50;
+  let qualified = windows.filter(w => w.quality >= qualityMin);
+  if (qualified.length < 2) {
+    // Signal too weak for windowed HL — fall back to single-pass median on
+    // first 15s (best SNR, proven reliable for short recordings)
+    const useSec = Math.min(duration, 15);
+    const useSamples = samples.subarray(0, Math.floor(useSec * sr));
+    const fbAbs = [];
+    for (let i = 0; i < useSamples.length; i += 4) fbAbs.push(Math.abs(useSamples[i]));
+    fbAbs.sort((a, b) => a - b);
+    const fbNoise = fbAbs[Math.floor(fbAbs.length * 0.5)] * 1.48;
+    return analyzeFile(useSamples, sr, fbNoise, expectedInterval);
+  }
+
+  // Outlier rejection: compute median rate, then MAD, discard windows > 3 MAD away
+  let kept = qualified;
+  if (qualified.length >= 3) {
+    const rates = qualified.map(w => w.rate).sort((a, b) => a - b);
+    const rawMedian = rates[Math.floor(rates.length / 2)];
+    const absDevs = rates.map(r => Math.abs(r - rawMedian)).sort((a, b) => a - b);
+    const mad = absDevs[Math.floor(absDevs.length / 2)] * 1.48; // scale to match std dev
+    const cutoff = Math.max(30, mad * 3); // at least ±30 s/d tolerance
+    kept = qualified.filter(w => Math.abs(w.rate - rawMedian) <= cutoff);
+    if (kept.length < 2) kept = qualified; // don't filter too aggressively
+  }
+
+  // Weighted mean of surviving window rates (weight = quality² * tickCount)
+  // Mean is better than median for combining few high-quality windows,
+  // and quality² strongly favors the most reliable windows.
+  let totalWeight = 0, weightedSum = 0;
+  for (const w of kept) {
+    const wt = w.quality * w.quality * w.tickCount;
+    weightedSum += w.rate * wt;
+    totalWeight += wt;
+  }
+  let medianRate = weightedSum / totalWeight;
+
+  // Pick the window closest to the median rate for beat error / details
+  let bestWin = kept[0];
+  let bestDist = Infinity;
+  for (const w of kept) {
+    const dist = Math.abs(w.rate - medianRate);
+    if (dist < bestDist) { bestDist = dist; bestWin = w; }
+  }
+
+  // Aggregate stats from kept windows only
+  const totalTicks = kept.reduce((s, w) => s + w.tickCount, 0);
+  const totalClean = kept.reduce((s, w) => s + w.cleanCount, 0);
+
+  const winRates = windows.map((w, i) => {
+    const qualFail = w.quality < qualityMin;
+    const rejected = !kept.includes(w);
+    const flag = qualFail ? 'q' : rejected ? '!' : '';
+    return `w${i+1}:${w.rate > 0 ? '+' : ''}${w.rate.toFixed(1)}(${(w.quality*100).toFixed(0)}%)${flag}`;
+  }).join(' ');
+
+  return {
+    result: {
+      rate: medianRate,
+      beatError: bestWin.beatError,
+      ampDeg: bestWin.ampDeg,
+      avgInterval: bestWin.avgInterval,
+      tickMultiple: bestWin.tickMultiple,
+      tickCount: totalTicks,
+      cleanCount: totalClean,
+      duration: duration
+    },
+    debug: `${kept.length}/${windows.length} windows, [${winRates}]`
+  };
+}
+
+// --- Core analysis: median of clean intervals ---
+// overrideN: if provided, use this N instead of auto-detecting
+function analyzeTickData(tickTimes, tickAmps, expectedInterval, overrideN) {
+  if (tickTimes.length < 4) return null;
+
+  // Compute all consecutive intervals
+  const intervals = [];
+  for (let i = 1; i < tickTimes.length; i++) {
+    intervals.push(tickTimes[i] - tickTimes[i - 1]);
+  }
+
+  // Find the best N (1=every tick, 2=every other, etc.)
+  let bestN = overrideN || 1;
+  if (!overrideN) {
+    let bestCount = 0;
+    for (let n = 1; n <= 4; n++) {
+      const target = expectedInterval * n;
+      let count = 0;
+      for (const v of intervals) {
+        if (Math.abs(v - target) < 0.003) count++;
+      }
+      if (count > bestCount) { bestCount = count; bestN = n; }
+    }
+  }
+
+  // Collect only intervals near bestN * expected
+  const target = expectedInterval * bestN;
+  const clean = intervals.filter(v => Math.abs(v - target) < 0.003);
+  if (clean.length < 2) return null;
+
+  // Use median of clean intervals (robust to any remaining outliers)
+  clean.sort((a, b) => a - b);
+  const mid = Math.floor(clean.length / 2);
+  const medianInterval = clean.length % 2 === 0
+    ? (clean[mid - 1] + clean[mid]) / 2
+    : clean[mid];
+
+  // Rate: compare per-beat interval to expected
+  const avgInterval = medianInterval / bestN;
+  const ratio = expectedInterval / avgInterval;
+  const rate = (ratio - 1) * 86400;
+
+  // Beat error: measure tick-tock asymmetry from consecutive interval pairs
+  let beatError = 0;
+  const target2 = expectedInterval * bestN;
+  const pairs = [];
+  for (let i = 2; i < tickTimes.length; i++) {
+    const a = tickTimes[i - 1] - tickTimes[i - 2];
+    const b = tickTimes[i] - tickTimes[i - 1];
+    if (Math.abs(a - target2) < 0.003 && Math.abs(b - target2) < 0.003) {
+      pairs.push(Math.abs(a - b));
+    }
+  }
+  if (pairs.length >= 2) {
+    pairs.sort((a, b) => a - b);
+    beatError = pairs[Math.floor(pairs.length / 2)] * 1000 / bestN;
+  }
+
+  const avgAmp = tickAmps.reduce((a, b) => a + b, 0) / tickAmps.length;
+  const ampDeg = Math.min(330, Math.max(150, 150 + avgAmp * 1800));
+  const duration = tickTimes[tickTimes.length - 1] - tickTimes[0];
+
+  return {
+    rate, beatError, ampDeg, avgInterval, tickMultiple: bestN,
+    tickCount: tickTimes.length, cleanCount: clean.length, duration
+  };
+}
+
+// --- Screen wake lock ---
+async function requestWakeLock() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch(e) {}
+}
+function releaseWakeLock() {
+  if (wakeLock) { wakeLock.release().catch(()=>{}); wakeLock = null; }
+}
+
+// --- Microphone ---
+async function startMic() {
+  if (isRecording) { stopMic(); return; }
+  try {
+    const ACtx = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new ACtx();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+
+    sourceNode = audioCtx.createMediaStreamSource(micStream);
+    filterNode = audioCtx.createBiquadFilter();
+    filterNode.type = 'highpass';
+    filterNode.frequency.value = 300;
+    filterNode.Q.value = 0.7;
+    analyserNode = audioCtx.createAnalyser();
+    analyserNode.fftSize = ANALYSER_SIZE;
+    analyserNode.smoothingTimeConstant = 0;
+    sourceNode.connect(filterNode);
+    filterNode.connect(analyserNode);
+
+    timeDomainBuf = null;
+    lastProcessedTime = 0;
+    lastResultsUpdate = 0;
+    noiseRMS = 0;
+    isRecording = true;
+    micBtn.textContent = 'Stop';
+    micBtn.classList.add('recording');
+    $('tipText').style.color = '';
+    $('tipText').textContent = 'Listening... Place caseback against the mic.';
+    requestWakeLock();
+    animFrame = requestAnimationFrame(processAndDraw);
+  } catch (err) {
+    console.error('Mic error:', err);
+    if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
+    const msg = err.name === 'NotAllowedError' ? 'Microphone permission denied. Check Settings > Safari > Microphone.'
+      : err.name === 'NotFoundError' ? 'No microphone found.'
+      : err.name === 'NotSupportedError' ? 'Microphone not available in this browser. Try opening in Safari.'
+      : 'Could not access microphone: ' + err.message;
+    $('tipText').textContent = msg;
+    $('tipText').style.color = '#ff1744';
+  }
+}
+
+function stopMic() {
+  isRecording = false;
+  micBtn.textContent = 'Start Microphone';
+  micBtn.classList.remove('recording');
+  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+  if (sourceNode) { try { sourceNode.disconnect(); } catch(e){} sourceNode = null; }
+  if (filterNode) { try { filterNode.disconnect(); } catch(e){} filterNode = null; }
+  if (analyserNode) { try { analyserNode.disconnect(); } catch(e){} analyserNode = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
+  timeDomainBuf = null;
+  releaseWakeLock();
+  updateLiveResults();
+  drawDots();
+}
+
+// --- Live mic results (same as before) ---
+function updateLiveResults() {
+  $('timingCard').style.display = '';
+  $('resultsCard').style.display = '';
+
+  if (ticks.length < 4) {
+    $('statusText').textContent = `Collecting ticks... (${ticks.length} detected)`;
+    $('statusText').className = 'status active';
+    return;
+  }
+
+  const result = analyzeTickData(ticks, tickAmplitudes, getExpectedInterval());
+  if (!result) return;
+
+  const { rate, beatError, ampDeg, avgInterval, tickMultiple } = result;
+  const absRate = Math.abs(rate);
+  const sign = rate >= 0 ? '+' : '';
+
+  $('rateVal').textContent = `${sign}${rate.toFixed(1)}`;
+  $('rateVal').className = 'result-value ' + (absRate < 5 ? 'good' : absRate < 15 ? 'warn' : 'bad');
+  $('beatErrVal').textContent = beatError.toFixed(2);
+  $('beatErrVal').className = 'result-value ' + (beatError < 0.5 ? 'good' : beatError < 1.5 ? 'warn' : 'bad');
+  $('ampVal').textContent = Math.round(ampDeg);
+  $('tickCountVal').textContent = ticks.length;
+  $('avgIntVal').textContent = (avgInterval * 1000).toFixed(3);
+
+  const duration = ticks[ticks.length - 1] - ticks[0];
+  let statusMsg = `Analyzing ${ticks.length} ticks over ${duration.toFixed(1)}s`;
+  if (tickMultiple > 1) {
+    statusMsg += ` (detecting every ${tickMultiple}${tickMultiple===2?'nd':tickMultiple===3?'rd':'th'} beat)`;
+  }
+  $('statusText').textContent = statusMsg;
+  $('statusText').className = 'status active';
+}
+
+// --- File upload (supports multiple) ---
+async function processFiles(files) {
+  const bph = parseInt(bphSelect.value);
+  const expectedInterval = 3600 / bph;
+
+  for (const file of files) {
+    $('tipText').style.color = '';
+    $('tipText').textContent = `Processing "${file.name}"...`;
+
+    try {
+      const arrayBuf = await file.arrayBuffer();
+      const ACtx = window.AudioContext || window.webkitAudioContext;
+      const decodeCtx = new ACtx();
+      if (decodeCtx.state === 'suspended') await decodeCtx.resume();
+      const audioBuf = await decodeCtx.decodeAudioData(arrayBuf);
+      decodeCtx.close().catch(()=>{});
+
+      const rawSamples = audioBuf.getChannelData(0);
+      const sr = audioBuf.sampleRate;
+
+      // High-pass filter at 300Hz
+      const rc = 1 / (2 * Math.PI * 300);
+      const dt = 1 / sr;
+      const alpha = rc / (rc + dt);
+      const samples = new Float32Array(rawSamples.length);
+      samples[0] = rawSamples[0];
+      for (let i = 1; i < rawSamples.length; i++) {
+        samples[i] = alpha * (samples[i - 1] + rawSamples[i] - rawSamples[i - 1]);
+      }
+
+      // Analyze file — use windowed analysis for longer recordings
+      const analysis = analyzeFileWindowed(samples, sr, expectedInterval);
+
+      const safeName = file.name.replace(/[<>&"']/g, '').replace(/\.[^.]+$/, '');
+
+      resultsLog.push({
+        name: safeName,
+        bph: bph,
+        duration: audioBuf.duration,
+        tickCount: analysis.result ? analysis.result.tickCount : 0,
+        result: analysis.result,
+        debug: analysis.debug
+      });
+
+    } catch (err) {
+      console.error('File error:', err);
+      const safeName = file.name.replace(/[<>&"']/g, '').replace(/\.[^.]+$/, '');
+      resultsLog.push({
+        name: safeName,
+        bph: bph,
+        duration: 0,
+        tickCount: 0,
+        result: null,
+        error: err.message
+      });
+    }
+  }
+
+  renderLog();
+  const count = files.length;
+  $('tipText').textContent = `Done — processed ${count} file${count > 1 ? 's' : ''}.`;
+
+  setTimeout(() => {
+    $('logCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 100);
+}
+
+// --- Render results log ---
+function renderLog() {
+  const container = $('logEntries');
+  container.innerHTML = '';
+  $('logCard').style.display = resultsLog.length ? '' : 'none';
+
+  for (const entry of resultsLog) {
+    const div = document.createElement('div');
+    div.className = 'result-entry';
+
+    if (entry.error) {
+      div.innerHTML = `
+        <div class="result-entry-header">
+          <span class="result-entry-name">${entry.name}</span>
+          <span class="result-entry-rate bad">Error</span>
+        </div>
+        <div class="result-entry-details">${entry.error}</div>`;
+    } else if (!entry.result) {
+      div.innerHTML = `
+        <div class="result-entry-header">
+          <span class="result-entry-name">${entry.name}</span>
+          <span class="result-entry-rate" style="color:#6b7a99;">--</span>
+        </div>
+        <div class="result-entry-details">${entry.tickCount} ticks in ${entry.duration.toFixed(1)}s — not enough data</div>`;
+    } else {
+      const r = entry.result;
+      const absRate = Math.abs(r.rate);
+      const sign = r.rate >= 0 ? '+' : '';
+      const rateClass = absRate < 5 ? 'good' : absRate < 15 ? 'warn' : 'bad';
+      let note = '';
+      if (r.tickMultiple > 1) {
+        note = `<div class="result-entry-note">Detecting every ${r.tickMultiple}${r.tickMultiple===2?'nd':r.tickMultiple===3?'rd':'th'} beat (weak signal)</div>`;
+      }
+
+      div.innerHTML = `
+        <div class="result-entry-header">
+          <span class="result-entry-name">${entry.name}</span>
+          <span class="result-entry-rate ${rateClass}">${sign}${r.rate.toFixed(1)} s/d</span>
+        </div>
+        <div class="result-entry-details">
+          ${entry.bph.toLocaleString()} BPH &middot; ${r.tickCount} ticks &middot; ${r.duration.toFixed(1)}s &middot;
+          Beat error: ${r.beatError.toFixed(2)}ms &middot; Avg: ${(r.avgInterval * 1000).toFixed(3)}ms
+        </div>
+        ${note}
+        ${entry.debug ? `<div class="result-entry-note">Detection: ${entry.debug}</div>` : ''}`;
+    }
+
+    container.appendChild(div);
+  }
+}
+
+// --- Copy results as text ---
+function copyResults() {
+  const lines = ['Watch Timegrapher Results', ''];
+  for (const entry of resultsLog) {
+    if (entry.error) {
+      lines.push(`${entry.name}: Error — ${entry.error}`);
+    } else if (!entry.result) {
+      lines.push(`${entry.name}: Not enough data (${entry.tickCount} ticks)`);
+    } else {
+      const r = entry.result;
+      const sign = r.rate >= 0 ? '+' : '';
+      lines.push(`${entry.name}: ${sign}${r.rate.toFixed(1)} s/d | Beat error: ${r.beatError.toFixed(2)}ms | ${entry.bph.toLocaleString()} BPH | ${r.tickCount} ticks${entry.debug ? ' | ' + entry.debug : ''}`);
+      if (r.tickMultiple > 1) {
+        lines.push(`  (detecting every ${r.tickMultiple}${r.tickMultiple===2?'nd':r.tickMultiple===3?'rd':'th'} beat)`);
+      }
+    }
+  }
+
+  const text = lines.join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = $('copyBtn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy Results'; btn.classList.remove('copied'); }, 2000);
+  }).catch(() => {
+    // Fallback: select a temporary textarea
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    const btn = $('copyBtn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy Results'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+// --- Timing dot diagram ---
+function drawDots() {
+  if (ticks.length < 3) return;
+  sizeCanvas(dotCanvas);
+  const w = dotCanvas.width, h = dotCanvas.height;
+  const midY = h / 2;
+  const expected = getExpectedInterval();
+
+  dotCtx.fillStyle = '#0d1220';
+  dotCtx.fillRect(0, 0, w, h);
+
+  dotCtx.strokeStyle = '#1e2a42';
+  dotCtx.lineWidth = 1;
+  dotCtx.beginPath();
+  dotCtx.moveTo(0, midY);
+  dotCtx.lineTo(w, midY);
+  dotCtx.stroke();
+
+  const maxDots = Math.floor(w / (4 * devicePixelRatio));
+  const startIdx = Math.max(1, ticks.length - maxDots);
+
+  const deviations = [];
+  for (let i = startIdx; i < ticks.length; i++) {
+    const interval = ticks[i] - ticks[i - 1];
+    deviations.push((interval - expected) * 1000);
+  }
+
+  if (deviations.length === 0) return;
+
+  const maxDev = Math.max(0.5, ...deviations.map(d => Math.abs(d)));
+  const scale = (h * 0.4) / maxDev;
+  const xStep = w / (deviations.length + 1);
+
+  for (let i = 0; i < deviations.length; i++) {
+    const x = xStep * (i + 1);
+    const y = midY - deviations[i] * scale;
+    const absDev = Math.abs(deviations[i]);
+    dotCtx.fillStyle = absDev < 0.05 ? '#00e676' : absDev < 0.2 ? '#ffab00' : '#ff4466';
+    dotCtx.beginPath();
+    dotCtx.arc(x, y, 2.5 * devicePixelRatio, 0, Math.PI * 2);
+    dotCtx.fill();
+  }
+
+  dotCtx.fillStyle = '#4a5a7a';
+  dotCtx.font = `${10 * devicePixelRatio}px sans-serif`;
+  dotCtx.textAlign = 'left';
+  dotCtx.fillText(`+${maxDev.toFixed(2)}ms`, 4, 14 * devicePixelRatio);
+  dotCtx.fillText(`-${maxDev.toFixed(2)}ms`, 4, h - 4);
+}
+
+// --- Events ---
+micBtn.addEventListener('click', function(e) {
+  e.preventDefault();
+  startMic();
+});
+
+fileBtn.addEventListener('click', function() {
+  fileInput.click();
+});
+
+fileInput.addEventListener('change', function(e) {
+  const files = e.target.files;
+  if (files && files.length) processFiles(Array.from(files));
+  this.value = '';
+});
+
+resetBtn.addEventListener('click', function(e) {
+  e.preventDefault();
+  resetMic();
+});
+
+$('copyBtn').addEventListener('click', function(e) {
+  e.preventDefault();
+  copyResults();
+});
+
+$('clearLogBtn').addEventListener('click', function(e) {
+  e.preventDefault();
+  resultsLog.length = 0;
+  renderLog();
+});
+
+const defaultTip = `<strong>Phone:</strong> Place caseback directly on the phone mic, then tap Start.<br>
+    <strong>Desktop:</strong> Use a contact/piezo mic — laptop mics can't pick up ticks.<br>
+    Record 15+ seconds in a quiet environment. Select multiple files to compare watches.`;
+
+function resetMic() {
+  stopMic();
+  ticks = [];
+  tickAmplitudes = [];
+  lastTickTime = 0;
+  cooldownUntil = 0;
+  lastProcessedTime = 0;
+  noiseRMS = 0;
+  $('rateVal').textContent = '--';
+  $('rateVal').className = 'result-value';
+  $('beatErrVal').textContent = '--';
+  $('beatErrVal').className = 'result-value';
+  $('ampVal').textContent = '--';
+  $('tickCountVal').textContent = '--';
+  $('avgIntVal').textContent = '--';
+  $('statusText').textContent = '';
+  $('timingCard').style.display = 'none';
+  $('resultsCard').style.display = 'none';
+  levelBar.style.width = '0%';
+  $('tipText').innerHTML = defaultTip;
+
+  sizeCanvas(waveCanvas);
+  waveCtx.fillStyle = '#0d1220';
+  waveCtx.fillRect(0, 0, waveCanvas.width, waveCanvas.height);
+  sizeCanvas(dotCanvas);
+  dotCtx.fillStyle = '#0d1220';
+  dotCtx.fillRect(0, 0, dotCanvas.width, dotCanvas.height);
+}
+
+// iOS audio unlock on first touch
+document.addEventListener('touchstart', function iosUnlock() {
+  const ACtx = window.AudioContext || window.webkitAudioContext;
+  if (ACtx) {
+    const ctx = new ACtx();
+    ctx.resume().then(() => ctx.close()).catch(()=>{});
+  }
+}, { once: true });
+</script>
+</body>
+</html>
