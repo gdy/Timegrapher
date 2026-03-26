@@ -554,6 +554,8 @@ let micStream = null;
 let sourceNode = null;
 let filterNode = null;
 let analyserNode = null;
+let scriptNode = null;
+let silentGain = null;
 let isRecording = false;
 let ticks = [];
 let tickAmplitudes = [];
@@ -562,6 +564,7 @@ const ANALYSER_SIZE = 4096;
 let lastTickTime = 0;
 let cooldownUntil = 0;
 let noiseRMS = 0;
+let totalSamples = 0; // sample-accurate counter for tick timing
 let wakeLock = null;
 
 // Results log for file uploads
@@ -647,23 +650,17 @@ function processAndDraw() {
   waveCtx.stroke();
 
   let maxLevel = 0;
-  const absSamples = [];
   for (let i = 0; i < timeDomainBuf.length; i++) {
     const a = Math.abs(timeDomainBuf[i]);
     if (a > maxLevel) maxLevel = a;
-    if (i % 4 === 0) absSamples.push(a);
   }
-  absSamples.sort((a, b) => a - b);
-  const medianAbs = absSamples[Math.floor(absSamples.length * 0.5)];
-  const bufNoise = medianAbs * 1.48;
-  noiseRMS = noiseRMS === 0 ? bufNoise : noiseRMS * 0.9 + bufNoise * 0.1;
 
   const thr = getThreshold();
   const pct = Math.min(100, maxLevel * 300);
   levelBar.style.width = pct + '%';
   levelBar.style.background = maxLevel > thr ? '#00e676' : '#00d4ff';
 
-  detectTicksInBuffer(timeDomainBuf, audioCtx.sampleRate);
+  // Tick detection now happens in ScriptProcessorNode callback (sample-accurate)
 
   const now = performance.now();
   if (now - lastResultsUpdate > 250) {
@@ -676,21 +673,27 @@ function processAndDraw() {
   animFrame = requestAnimationFrame(processAndDraw);
 }
 
-function detectTicksInBuffer(samples, sampleRate) {
+// Sample-accurate tick detection via ScriptProcessorNode
+// baseSample = running count of samples since recording start
+function detectTicksFromScript(samples, sampleRate, baseSample) {
   const threshold = getThreshold();
-  const minGap = getMinTickGap();
-  const currentTime = audioCtx.currentTime;
-  const bufDuration = samples.length / sampleRate;
-  const bufStartTime = currentTime - bufDuration;
-  const newStartTime = Math.max(bufStartTime, lastProcessedTime);
-  const startSample = Math.max(0, Math.floor((newStartTime - bufStartTime) * sampleRate));
-  lastProcessedTime = currentTime;
+  const minGapSamples = Math.floor(getMinTickGap() * sampleRate);
+  const cooldownSamples = Math.floor(minGapSamples * 0.6);
 
-  for (let i = startSample; i < samples.length; i++) {
+  // Update noise floor from this buffer
+  const absSamples = [];
+  for (let i = 0; i < samples.length; i += 4) absSamples.push(Math.abs(samples[i]));
+  absSamples.sort((a, b) => a - b);
+  const bufNoise = absSamples[Math.floor(absSamples.length * 0.5)] * 1.48;
+  noiseRMS = noiseRMS === 0 ? bufNoise : noiseRMS * 0.9 + bufNoise * 0.1;
+
+  for (let i = 0; i < samples.length; i++) {
     const absVal = Math.abs(samples[i]);
     if (absVal > threshold) {
-      const sampleTime = bufStartTime + (i / sampleRate);
-      if (sampleTime - lastTickTime >= minGap && sampleTime > cooldownUntil) {
+      const globalSample = baseSample + i;
+      const tickTime = globalSample / sampleRate;
+      if (tickTime - lastTickTime >= getMinTickGap() && tickTime > cooldownUntil) {
+        // Peak finding with lookahead
         let peak = absVal;
         const lookAhead = Math.min(128, samples.length - i);
         let peakIdx = i;
@@ -707,13 +710,14 @@ function detectTicksInBuffer(samples, sampleRate) {
           const w = samples[j] * samples[j];
           swt += j * w; sw += w;
         }
-        const refinedIdx = sw > 0 ? swt / sw : peakIdx;
-        const refinedTime = bufStartTime + (refinedIdx / sampleRate);
+        const refinedGlobal = baseSample + (sw > 0 ? swt / sw : peakIdx);
+        const refinedTime = refinedGlobal / sampleRate;
+
         ticks.push(refinedTime);
         tickAmplitudes.push(peak);
         lastTickTime = refinedTime;
-        cooldownUntil = refinedTime + minGap * 0.6;
-        i = peakIdx + Math.floor(minGap * sampleRate * 0.3);
+        cooldownUntil = refinedTime + getMinTickGap() * 0.6;
+        i = peakIdx + Math.floor(minGapSamples * 0.3);
       }
     }
   }
@@ -1139,11 +1143,30 @@ async function startMic() {
     filterNode.type = 'highpass';
     filterNode.frequency.value = 300;
     filterNode.Q.value = 0.7;
+
+    // AnalyserNode for visualization only
     analyserNode = audioCtx.createAnalyser();
     analyserNode.fftSize = ANALYSER_SIZE;
     analyserNode.smoothingTimeConstant = 0;
     sourceNode.connect(filterNode);
     filterNode.connect(analyserNode);
+
+    // ScriptProcessorNode for sample-accurate tick detection
+    // Sequential non-overlapping buffers with perfect sample counting
+    const SCRIPT_BUF = 4096;
+    scriptNode = audioCtx.createScriptProcessor(SCRIPT_BUF, 1, 1);
+    totalSamples = 0;
+    scriptNode.onaudioprocess = function(e) {
+      const input = e.inputBuffer.getChannelData(0);
+      const sr = audioCtx.sampleRate;
+      detectTicksFromScript(input, sr, totalSamples);
+      totalSamples += input.length;
+    };
+    silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0;
+    filterNode.connect(scriptNode);
+    scriptNode.connect(silentGain);
+    silentGain.connect(audioCtx.destination);
 
     timeDomainBuf = null;
     lastProcessedTime = 0;
@@ -1173,6 +1196,8 @@ function stopMic() {
   micBtn.textContent = 'Start Microphone';
   micBtn.classList.remove('recording');
   if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+  if (scriptNode) { try { scriptNode.disconnect(); } catch(e){} scriptNode = null; }
+  if (silentGain) { try { silentGain.disconnect(); } catch(e){} silentGain = null; }
   if (sourceNode) { try { sourceNode.disconnect(); } catch(e){} sourceNode = null; }
   if (filterNode) { try { filterNode.disconnect(); } catch(e){} filterNode = null; }
   if (analyserNode) { try { analyserNode.disconnect(); } catch(e){} analyserNode = null; }
