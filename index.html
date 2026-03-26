@@ -1177,6 +1177,11 @@ async function startMic() {
     micBtn.classList.add('recording');
     $('tipText').style.color = '';
     $('tipText').textContent = 'Listening... Place caseback against the mic.';
+    // Collapse settings and scroll to input on mobile
+    $('mainApp').style.display = 'none';
+    setTimeout(() => {
+      micBtn.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
     requestWakeLock();
     animFrame = requestAnimationFrame(processAndDraw);
   } catch (err) {
@@ -1195,6 +1200,7 @@ function stopMic() {
   isRecording = false;
   micBtn.textContent = 'Start Microphone';
   micBtn.classList.remove('recording');
+  $('mainApp').style.display = '';
   if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
   if (scriptNode) { try { scriptNode.disconnect(); } catch(e){} scriptNode = null; }
   if (silentGain) { try { silentGain.disconnect(); } catch(e){} silentGain = null; }
@@ -1223,12 +1229,19 @@ function updateLiveResults() {
   const result = analyzeTickData(ticks, tickAmplitudes, getExpectedInterval());
   if (!result) return;
 
-  const { rate, beatError, ampDeg, avgInterval, tickMultiple } = result;
+  const { rate, beatError, ampDeg, avgInterval, tickMultiple, cleanCount, tickCount } = result;
   const absRate = Math.abs(rate);
   const sign = rate >= 0 ? '+' : '';
+  const cleanPct = tickCount > 1 ? cleanCount / (tickCount - 1) : 0;
+  const lowQuality = cleanPct < 0.4 || cleanCount < 5;
 
-  $('rateVal').textContent = `${sign}${rate.toFixed(1)}`;
-  $('rateVal').className = 'result-value ' + (absRate < 5 ? 'good' : absRate < 15 ? 'warn' : 'bad');
+  if (lowQuality && tickCount > 10) {
+    $('rateVal').textContent = '---';
+    $('rateVal').className = 'result-value';
+  } else {
+    $('rateVal').textContent = `${sign}${rate.toFixed(1)}`;
+    $('rateVal').className = 'result-value ' + (absRate < 5 ? 'good' : absRate < 15 ? 'warn' : 'bad');
+  }
   $('beatErrVal').textContent = beatError.toFixed(2);
   $('beatErrVal').className = 'result-value ' + (beatError < 0.5 ? 'good' : beatError < 1.5 ? 'warn' : 'bad');
   $('ampVal').textContent = Math.round(ampDeg);
@@ -1238,7 +1251,11 @@ function updateLiveResults() {
   const duration = ticks[ticks.length - 1] - ticks[0];
   let statusMsg = `Analyzing ${ticks.length} ticks over ${duration.toFixed(1)}s`;
   if (tickMultiple > 1) {
-    statusMsg += ` (detecting every ${tickMultiple}${tickMultiple===2?'nd':tickMultiple===3?'rd':'th'} beat)`;
+    statusMsg += ` (N=${tickMultiple})`;
+  }
+  statusMsg += ` — ${cleanCount} clean (${(cleanPct * 100).toFixed(0)}%)`;
+  if (lowQuality && tickCount > 10) {
+    statusMsg += ' — weak signal, move watch closer to mic';
   }
   $('statusText').textContent = statusMsg;
   $('statusText').className = 'status active';
