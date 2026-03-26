@@ -606,12 +606,12 @@ setTimeout(() => { sizeCanvas(waveCanvas); sizeCanvas(dotCanvas); }, 100);
 // --- Threshold / sensitivity ---
 function getMultiplier() {
   const s = sensSlider.value / 100;
-  // At max (100): 2× noise floor. At min (0): 15×
-  return 2 + (1 - s) * 13;
+  // At max (100): 1.5× noise floor. At min (0): 15×
+  return 1.5 + (1 - s) * 13.5;
 }
 
 function getThreshold() {
-  return Math.max(0.0005, noiseRMS * getMultiplier());
+  return Math.max(0.0002, noiseRMS * getMultiplier());
 }
 
 function getExpectedInterval() {
