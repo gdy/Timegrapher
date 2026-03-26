@@ -430,8 +430,8 @@
 
   <label for="sensitivity">Mic Sensitivity</label>
   <div class="range-row">
-    <input type="range" id="sensitivity" min="1" max="100" value="80">
-    <span class="range-val" id="sensVal">80</span>
+    <input type="range" id="sensitivity" min="1" max="100" value="90">
+    <span class="range-val" id="sensVal">90</span>
   </div>
   <div class="threshold-info" id="threshInfo"></div>
 </div>
@@ -603,11 +603,12 @@ setTimeout(() => { sizeCanvas(waveCanvas); sizeCanvas(dotCanvas); }, 100);
 // --- Threshold / sensitivity ---
 function getMultiplier() {
   const s = sensSlider.value / 100;
-  return 3 + (1 - s) * 12;
+  // At max (100): 2× noise floor. At min (0): 15×
+  return 2 + (1 - s) * 13;
 }
 
 function getThreshold() {
-  return Math.max(0.002, noiseRMS * getMultiplier());
+  return Math.max(0.0005, noiseRMS * getMultiplier());
 }
 
 function getExpectedInterval() {
