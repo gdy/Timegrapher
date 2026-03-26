@@ -1033,7 +1033,7 @@ function analyzeFileWindowed(samples, sr, expectedInterval) {
   };
 }
 
-// --- Core analysis: median of clean intervals ---
+// --- Core analysis: iterative median + Hodges-Lehmann ---
 // overrideN: if provided, use this N instead of auto-detecting
 function analyzeTickData(tickTimes, tickAmps, expectedInterval, overrideN) {
   if (tickTimes.length < 4) return null;
@@ -1058,31 +1058,44 @@ function analyzeTickData(tickTimes, tickAmps, expectedInterval, overrideN) {
     }
   }
 
-  // Collect only intervals near bestN * expected
+  // Iterative median refinement: 3 passes narrowing the window
   const target = expectedInterval * bestN;
-  const clean = intervals.filter(v => Math.abs(v - target) < 0.003);
+  let center = target;
+  let window = 0.003;
+  let clean = [];
+  for (let pass = 0; pass < 3; pass++) {
+    clean = intervals.filter(v => Math.abs(v - center) <= window);
+    if (clean.length < 3) break;
+    clean.sort((a, b) => a - b);
+    const mid = Math.floor(clean.length / 2);
+    center = clean.length % 2 === 0 ? (clean[mid - 1] + clean[mid]) / 2 : clean[mid];
+    window = Math.max(0.0005, window * 0.5);
+  }
   if (clean.length < 2) return null;
 
-  // Use median of clean intervals (robust to any remaining outliers)
-  clean.sort((a, b) => a - b);
-  const mid = Math.floor(clean.length / 2);
-  const medianInterval = clean.length % 2 === 0
-    ? (clean[mid - 1] + clean[mid]) / 2
-    : clean[mid];
+  // Hodges-Lehmann estimator on the refined clean set for tick-tock bias correction
+  let hlCenter = center;
+  if (clean.length >= 5 && clean.length <= 500) {
+    const pw = [];
+    for (let i = 0; i < clean.length; i++)
+      for (let j = i; j < clean.length; j++)
+        pw.push((clean[i] + clean[j]) / 2);
+    pw.sort((a, b) => a - b);
+    hlCenter = pw[Math.floor(pw.length / 2)];
+  }
 
   // Rate: compare per-beat interval to expected
-  const avgInterval = medianInterval / bestN;
+  const avgInterval = hlCenter / bestN;
   const ratio = expectedInterval / avgInterval;
   const rate = (ratio - 1) * 86400;
 
   // Beat error: measure tick-tock asymmetry from consecutive interval pairs
   let beatError = 0;
-  const target2 = expectedInterval * bestN;
   const pairs = [];
   for (let i = 2; i < tickTimes.length; i++) {
     const a = tickTimes[i - 1] - tickTimes[i - 2];
     const b = tickTimes[i] - tickTimes[i - 1];
-    if (Math.abs(a - target2) < 0.003 && Math.abs(b - target2) < 0.003) {
+    if (Math.abs(a - target) < 0.003 && Math.abs(b - target) < 0.003) {
       pairs.push(Math.abs(a - b));
     }
   }
