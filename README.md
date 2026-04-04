@@ -2,7 +2,7 @@
 
 A single-file web app that measures mechanical watch accuracy using your phone's microphone or uploaded audio recordings. Reports rate in seconds/day (s/d), beat error, and amplitude.
 
-**[Open the app](https://gdy.github.io/timegrapher)**
+**[Open the app](https://gdy.github.io/Timegrapher)**
 
 ## How to use
 
