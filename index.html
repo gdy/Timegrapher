@@ -565,6 +565,7 @@ let lastTickTime = 0;
 let cooldownUntil = 0;
 let noiseRMS = 0;
 let totalSamples = 0; // sample-accurate counter for tick timing
+let carryBuf = null;  // carry-over buffer for cross-boundary tick detection
 let wakeLock = null;
 
 // Results log for file uploads
@@ -675,10 +676,10 @@ function processAndDraw() {
 
 // Sample-accurate tick detection via ScriptProcessorNode
 // baseSample = running count of samples since recording start
-function detectTicksFromScript(samples, sampleRate, baseSample) {
+function detectTicksFromScript(samples, sampleRate, baseSample, detectLimit) {
   const threshold = getThreshold();
   const minGapSamples = Math.floor(getMinTickGap() * sampleRate);
-  const cooldownSamples = Math.floor(minGapSamples * 0.6);
+  if (detectLimit === undefined) detectLimit = samples.length;
 
   // Update noise floor from this buffer
   const absSamples = [];
@@ -687,7 +688,7 @@ function detectTicksFromScript(samples, sampleRate, baseSample) {
   const bufNoise = absSamples[Math.floor(absSamples.length * 0.5)] * 1.48;
   noiseRMS = noiseRMS === 0 ? bufNoise : noiseRMS * 0.9 + bufNoise * 0.1;
 
-  for (let i = 0; i < samples.length; i++) {
+  for (let i = 0; i < detectLimit; i++) {
     const absVal = Math.abs(samples[i]);
     if (absVal > threshold) {
       const globalSample = baseSample + i;
@@ -950,7 +951,7 @@ function analyzeFileWindowed(samples, sr, expectedInterval) {
         duration: result.result.duration,
         ampDeg: result.result.ampDeg,
         avgInterval: result.result.avgInterval,
-        quality: result.result.cleanCount / Math.max(1, result.result.tickCount),
+        quality: result.result.cleanCount / Math.max(1, result.result.tickCount - 1),
         debug: result.debug
       });
     }
@@ -1154,13 +1155,34 @@ async function startMic() {
     // ScriptProcessorNode for sample-accurate tick detection
     // Sequential non-overlapping buffers with perfect sample counting
     const SCRIPT_BUF = 4096;
+    const CARRY_SIZE = 256; // carry-over for cross-boundary peak/centroid detection
     scriptNode = audioCtx.createScriptProcessor(SCRIPT_BUF, 1, 1);
     totalSamples = 0;
+    carryBuf = null;
     scriptNode.onaudioprocess = function(e) {
       const input = e.inputBuffer.getChannelData(0);
       const sr = audioCtx.sampleRate;
-      detectTicksFromScript(input, sr, totalSamples);
+
+      // Prepend carry-over so ticks near buffer boundaries get full lookahead/centroid
+      let combined, carryLen;
+      if (carryBuf) {
+        combined = new Float32Array(carryBuf.length + input.length);
+        combined.set(carryBuf);
+        combined.set(input, carryBuf.length);
+        carryLen = carryBuf.length;
+      } else {
+        combined = new Float32Array(input);
+        carryLen = 0;
+      }
+
+      const baseSample = totalSamples - carryLen;
+      // Defer threshold crossings in last CARRY_SIZE samples to next buffer
+      detectTicksFromScript(combined, sr, baseSample, combined.length - CARRY_SIZE);
       totalSamples += input.length;
+
+      // Save carry for next buffer
+      carryBuf = new Float32Array(CARRY_SIZE);
+      carryBuf.set(combined.subarray(combined.length - CARRY_SIZE));
     };
     silentGain = audioCtx.createGain();
     silentGain.gain.value = 0;
@@ -1226,7 +1248,22 @@ function updateLiveResults() {
     return;
   }
 
-  const result = analyzeTickData(ticks, tickAmplitudes, getExpectedInterval());
+  // Sliding window: analyze last 30s for stable results (drops early positioning noise)
+  const WINDOW_SEC = 30;
+  let windowTicks = ticks;
+  let windowAmps = tickAmplitudes;
+  const totalDuration = ticks[ticks.length - 1] - ticks[0];
+  if (totalDuration > WINDOW_SEC) {
+    const cutoff = ticks[ticks.length - 1] - WINDOW_SEC;
+    let startIdx = 0;
+    for (let i = ticks.length - 1; i >= 0; i--) {
+      if (ticks[i] < cutoff) { startIdx = i + 1; break; }
+    }
+    windowTicks = ticks.slice(startIdx);
+    windowAmps = tickAmplitudes.slice(startIdx);
+  }
+
+  const result = analyzeTickData(windowTicks, windowAmps, getExpectedInterval());
   if (!result) return;
 
   const { rate, beatError, ampDeg, avgInterval, tickMultiple, cleanCount, tickCount } = result;
@@ -1242,17 +1279,24 @@ function updateLiveResults() {
     $('rateVal').textContent = `${sign}${rate.toFixed(1)}`;
     $('rateVal').className = 'result-value ' + (absRate < 5 ? 'good' : absRate < 15 ? 'warn' : 'bad');
   }
-  $('beatErrVal').textContent = beatError.toFixed(2);
-  $('beatErrVal').className = 'result-value ' + (beatError < 0.5 ? 'good' : beatError < 1.5 ? 'warn' : 'bad');
+  if (tickMultiple > 1) {
+    $('beatErrVal').textContent = 'N/A';
+    $('beatErrVal').className = 'result-value';
+  } else {
+    $('beatErrVal').textContent = beatError.toFixed(2);
+    $('beatErrVal').className = 'result-value ' + (beatError < 0.5 ? 'good' : beatError < 1.5 ? 'warn' : 'bad');
+  }
   $('ampVal').textContent = Math.round(ampDeg);
   $('tickCountVal').textContent = ticks.length;
   $('avgIntVal').textContent = (avgInterval * 1000).toFixed(3);
 
   const duration = ticks[ticks.length - 1] - ticks[0];
-  let statusMsg = `Analyzing ${ticks.length} ticks over ${duration.toFixed(1)}s`;
-  if (tickMultiple > 1) {
-    statusMsg += ` (N=${tickMultiple})`;
+  let statusMsg = `${ticks.length} ticks over ${duration.toFixed(1)}s`;
+  if (windowTicks !== ticks) {
+    const winDur = windowTicks[windowTicks.length - 1] - windowTicks[0];
+    statusMsg += ` (last ${winDur.toFixed(0)}s: ${windowTicks.length} ticks)`;
   }
+  if (tickMultiple > 1) statusMsg += ` N=${tickMultiple}`;
   statusMsg += ` — ${cleanCount} clean (${(cleanPct * 100).toFixed(0)}%)`;
   if (lowQuality && tickCount > 10) {
     statusMsg += ' — weak signal, move watch closer to mic';
@@ -1369,7 +1413,7 @@ function renderLog() {
         </div>
         <div class="result-entry-details">
           ${entry.bph.toLocaleString()} BPH &middot; ${r.tickCount} ticks &middot; ${r.duration.toFixed(1)}s &middot;
-          Beat error: ${r.beatError.toFixed(2)}ms &middot; Avg: ${(r.avgInterval * 1000).toFixed(3)}ms
+          Beat error: ${r.tickMultiple > 1 ? 'N/A' : r.beatError.toFixed(2) + 'ms'} &middot; Avg: ${(r.avgInterval * 1000).toFixed(3)}ms
         </div>
         ${note}
         ${entry.debug ? `<div class="result-entry-note">Detection: ${entry.debug}</div>` : ''}`;
@@ -1513,6 +1557,7 @@ function resetMic() {
   cooldownUntil = 0;
   lastProcessedTime = 0;
   noiseRMS = 0;
+  carryBuf = null;
   $('rateVal').textContent = '--';
   $('rateVal').className = 'result-value';
   $('beatErrVal').textContent = '--';
