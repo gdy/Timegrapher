@@ -623,7 +623,7 @@ function getExpectedInterval() {
 }
 
 function getMinTickGap() {
-  return getExpectedInterval() * 0.4;
+  return getExpectedInterval() * 0.7; // match file path — suppresses false detections between real ticks
 }
 
 // --- Waveform + tick detection via rAF polling ---
