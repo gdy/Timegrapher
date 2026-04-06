@@ -492,6 +492,9 @@
     </div>
   </div>
   <p class="status" id="statusText"></p>
+  <div class="btn-row" style="margin-top:10px; justify-content:center;">
+    <button class="btn-copy" id="copyLiveBtn" style="display:none;">Copy Results</button>
+  </div>
 </div>
 
 <!-- Results log (file uploads accumulate here) -->
@@ -1063,18 +1066,19 @@ function analyzeTickData(tickTimes, tickAmps, expectedInterval, overrideN) {
     }
   }
 
-  // Iterative median refinement: 3 passes narrowing the window
+  // Iterative median refinement: 2 passes with wider floor for live mic jitter
+  // Live mic timestamps have more jitter than offline centroid-refined file timestamps
   const target = expectedInterval * bestN;
   let center = target;
-  let window = 0.003;
+  let window = 0.004; // ±4ms initial
   let clean = [];
-  for (let pass = 0; pass < 3; pass++) {
+  for (let pass = 0; pass < 2; pass++) {
     clean = intervals.filter(v => Math.abs(v - center) <= window);
     if (clean.length < 3) break;
     clean.sort((a, b) => a - b);
     const mid = Math.floor(clean.length / 2);
     center = clean.length % 2 === 0 ? (clean[mid - 1] + clean[mid]) / 2 : clean[mid];
-    window = Math.max(0.0005, window * 0.5);
+    window = Math.max(0.002, window * 0.5); // floor at ±2ms (vs ±0.5ms for files)
   }
   if (clean.length < 2) return null;
 
@@ -1303,6 +1307,21 @@ function updateLiveResults() {
   }
   $('statusText').textContent = statusMsg;
   $('statusText').className = 'status active';
+
+  // Store for copy button
+  const copyBtn = $('copyLiveBtn');
+  copyBtn.style.display = '';
+  copyBtn._liveResult = {
+    rate: lowQuality && tickCount > 10 ? '---' : `${sign}${rate.toFixed(1)}`,
+    beatError: tickMultiple > 1 ? 'N/A' : beatError.toFixed(2) + 'ms',
+    ampDeg: Math.round(ampDeg),
+    tickCount: ticks.length,
+    avgInterval: (avgInterval * 1000).toFixed(3),
+    duration: duration.toFixed(1),
+    cleanCount, cleanPct: (cleanPct * 100).toFixed(0),
+    tickMultiple,
+    bph: parseInt(bphSelect.value)
+  };
 }
 
 // --- File upload (supports multiple) ---
@@ -1537,6 +1556,38 @@ resetBtn.addEventListener('click', function(e) {
 $('copyBtn').addEventListener('click', function(e) {
   e.preventDefault();
   copyResults();
+});
+
+$('copyLiveBtn').addEventListener('click', function(e) {
+  e.preventDefault();
+  const r = this._liveResult;
+  if (!r) return;
+  const lines = [
+    'Watch Timegrapher — Live Mic',
+    '',
+    `Rate: ${r.rate} s/d`,
+    `Beat error: ${r.beatError}`,
+    `Avg interval: ${r.avgInterval}ms`,
+    `${r.tickCount} ticks over ${r.duration}s — ${r.cleanCount} clean (${r.cleanPct}%)`,
+    `${r.bph.toLocaleString()} BPH` + (r.tickMultiple > 1 ? ` (N=${r.tickMultiple})` : '')
+  ];
+  const text = lines.join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    this.textContent = 'Copied!';
+    this.classList.add('copied');
+    setTimeout(() => { this.textContent = 'Copy Results'; this.classList.remove('copied'); }, 2000);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    this.textContent = 'Copied!';
+    this.classList.add('copied');
+    setTimeout(() => { this.textContent = 'Copy Results'; this.classList.remove('copied'); }, 2000);
+  });
 });
 
 $('clearLogBtn').addEventListener('click', function(e) {
