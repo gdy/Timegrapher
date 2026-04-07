@@ -1046,6 +1046,28 @@ function analyzeFileWindowed(samples, sr, expectedInterval) {
 function analyzeTickData(tickTimes, tickAmps, expectedInterval, overrideN) {
   if (tickTimes.length < 4) return null;
 
+  // Amplitude filter: reject detections with amplitude < 0.4x median.
+  // Real ticks within a recording have similar amplitude; weak detections
+  // are usually noise spikes that crossed threshold but aren't real ticks.
+  if (tickAmps && tickAmps.length === tickTimes.length && tickAmps.length >= 8) {
+    const sortedAmps = tickAmps.slice().sort((a, b) => a - b);
+    const medAmp = sortedAmps[Math.floor(sortedAmps.length / 2)];
+    const ampFloor = medAmp * 0.4;
+    const filteredTimes = [];
+    const filteredAmps = [];
+    for (let i = 0; i < tickTimes.length; i++) {
+      if (tickAmps[i] >= ampFloor) {
+        filteredTimes.push(tickTimes[i]);
+        filteredAmps.push(tickAmps[i]);
+      }
+    }
+    // Only use the filter if it kept enough ticks
+    if (filteredTimes.length >= 4 && filteredTimes.length >= tickTimes.length * 0.5) {
+      tickTimes = filteredTimes;
+      tickAmps = filteredAmps;
+    }
+  }
+
   // Compute all consecutive intervals
   const intervals = [];
   for (let i = 1; i < tickTimes.length; i++) {
