@@ -759,12 +759,13 @@ function detectTicksInSamples(samples, sr, threshold, minGap) {
 // --- Analyze file: peak detection with iterative median refinement ---
 // Uses increased minGap (0.7x) to suppress false between-tick detections,
 // then iteratively narrows the interval filter to converge on the true rate.
-function analyzeFile(samples, sr, fileNoiseRMS, expectedInterval) {
+function analyzeFile(samples, sr, fileNoiseRMS, expectedInterval, threshFloor) {
   const minGap = expectedInterval * 0.7; // suppress false detections between real ticks
   const detections = [];
+  const floor = threshFloor !== undefined ? threshFloor : 0.002;
 
   for (const mult of [3, 4, 5, 6, 7, 8, 10, 12]) {
-    const threshold = Math.max(0.002, fileNoiseRMS * mult);
+    const threshold = Math.max(floor, fileNoiseRMS * mult);
     const det = detectTicksInSamples(samples, sr, threshold, minGap);
     if (det.tickTimes.length < 4) continue;
 
@@ -919,7 +920,7 @@ function analyzeFile(samples, sr, fileNoiseRMS, expectedInterval) {
 
 // --- Windowed file analysis: split longer recordings into overlapping windows ---
 // Each window gets its own local noise floor, analyzed independently, results combined.
-function analyzeFileWindowed(samples, sr, expectedInterval) {
+function analyzeFileWindowed(samples, sr, expectedInterval, threshFloor) {
   const duration = samples.length / sr;
   const winSec = 10;   // 10-second analysis windows
   const stepSec = 5;   // 5-second step (50% overlap)
@@ -930,7 +931,7 @@ function analyzeFileWindowed(samples, sr, expectedInterval) {
     for (let i = 0; i < samples.length; i += 4) fileAbs.push(Math.abs(samples[i]));
     fileAbs.sort((a, b) => a - b);
     const fileNoiseRMS = fileAbs[Math.floor(fileAbs.length * 0.5)] * 1.48;
-    return analyzeFile(samples, sr, fileNoiseRMS, expectedInterval);
+    return analyzeFile(samples, sr, fileNoiseRMS, expectedInterval, threshFloor);
   }
 
   // Build windows
@@ -946,7 +947,7 @@ function analyzeFileWindowed(samples, sr, expectedInterval) {
     winAbs.sort((a, b) => a - b);
     const winNoise = winAbs[Math.floor(winAbs.length * 0.5)] * 1.48;
 
-    const result = analyzeFile(winSamples, sr, winNoise, expectedInterval);
+    const result = analyzeFile(winSamples, sr, winNoise, expectedInterval, threshFloor);
     if (result.result) {
       windows.push({
         rate: result.result.hlRate,  // HL rate: unbiased for tick-tock dropout
@@ -969,7 +970,7 @@ function analyzeFileWindowed(samples, sr, expectedInterval) {
     for (let i = 0; i < samples.length; i += 4) fileAbs.push(Math.abs(samples[i]));
     fileAbs.sort((a, b) => a - b);
     const fileNoiseRMS = fileAbs[Math.floor(fileAbs.length * 0.5)] * 1.48;
-    return analyzeFile(samples, sr, fileNoiseRMS, expectedInterval);
+    return analyzeFile(samples, sr, fileNoiseRMS, expectedInterval, threshFloor);
   }
 
   // Quality gate: discard windows with low clean% (unreliable HL estimates)
@@ -984,7 +985,7 @@ function analyzeFileWindowed(samples, sr, expectedInterval) {
     for (let i = 0; i < useSamples.length; i += 4) fbAbs.push(Math.abs(useSamples[i]));
     fbAbs.sort((a, b) => a - b);
     const fbNoise = fbAbs[Math.floor(fbAbs.length * 0.5)] * 1.48;
-    return analyzeFile(useSamples, sr, fbNoise, expectedInterval);
+    return analyzeFile(useSamples, sr, fbNoise, expectedInterval, threshFloor);
   }
 
   // Outlier rejection: compute median rate, then MAD, discard windows > 3 MAD away
@@ -1301,18 +1302,11 @@ function updateLiveResults() {
       let off = 0;
       for (const c of recordedAudio) { merged.set(c, off); off += c.length; }
 
-      // High-pass filter at 300Hz (match file path)
-      const rc = 1 / (2 * Math.PI * 300);
-      const dt = 1 / recordedSampleRate;
-      const alpha = rc / (rc + dt);
-      const filtered = new Float32Array(merged.length);
-      filtered[0] = merged[0];
-      for (let i = 1; i < merged.length; i++) {
-        filtered[i] = alpha * (filtered[i - 1] + merged[i] - merged[i - 1]);
-      }
-
+      // Audio from scriptNode is already biquad-HP filtered at 300Hz —
+      // do not apply another HP filter (would attenuate ticks).
+      // Lower threshold floor (0.0002) for live mic — quieter signals than uploads.
       const expectedInterval = getExpectedInterval();
-      const analysis = analyzeFileWindowed(filtered, recordedSampleRate, expectedInterval);
+      const analysis = analyzeFileWindowed(merged, recordedSampleRate, expectedInterval, 0.0002);
       if (analysis && analysis.result) {
         fileResult = analysis.result;
         result = {
