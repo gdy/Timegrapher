@@ -290,6 +290,7 @@
   .result-value.good { color: #00c853; }
   .result-value.warn { color: #ffab00; }
   .result-value.bad { color: #ff1744; }
+  .result-value.low-conf { opacity: 0.5; }
   .result-unit { font-size: 10px; color: #555; }
 
   .tick-dot-strip {
@@ -1296,14 +1297,17 @@ function updateLiveResults() {
   const absRate = Math.abs(rate);
   const sign = rate >= 0 ? '+' : '';
   const cleanPct = tickCount > 1 ? cleanCount / (tickCount - 1) : 0;
-  const lowQuality = cleanPct < 0.4 || cleanCount < 5;
+  // Quality tiers — show rate even at low quality, just dim it
+  const tooFewClean = cleanCount < 10;
+  const lowQuality = cleanPct < 0.15;
 
-  if (lowQuality && tickCount > 10) {
+  if (tooFewClean) {
     $('rateVal').textContent = '---';
     $('rateVal').className = 'result-value';
   } else {
     $('rateVal').textContent = `${sign}${rate.toFixed(1)}`;
-    $('rateVal').className = 'result-value ' + (absRate < 5 ? 'good' : absRate < 15 ? 'warn' : 'bad');
+    let cls = absRate < 5 ? 'good' : absRate < 15 ? 'warn' : 'bad';
+    $('rateVal').className = 'result-value ' + cls + (lowQuality ? ' low-conf' : '');
   }
   if (tickMultiple > 1) {
     $('beatErrVal').textContent = 'N/A';
