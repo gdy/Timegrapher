@@ -1032,12 +1032,15 @@ function analyzeFileWindowed(samples, sr, expectedInterval, threshFloor) {
     return `w${i+1}:${w.rate > 0 ? '+' : ''}${w.rate.toFixed(1)}(${(w.quality*100).toFixed(0)}%)${flag}`;
   }).join(' ');
 
+  // Derive avgInterval consistent with final rate (not from one window's local fit)
+  const consistentAvgInterval = expectedInterval / (1 + medianRate / 86400);
+
   return {
     result: {
       rate: medianRate,
       beatError: bestWin.beatError,
       ampDeg: bestWin.ampDeg,
-      avgInterval: bestWin.avgInterval,
+      avgInterval: consistentAvgInterval,
       tickMultiple: bestWin.tickMultiple,
       tickCount: totalTicks,
       cleanCount: totalClean,
@@ -1333,11 +1336,12 @@ function updateLiveResults() {
   const absRate = Math.abs(rate);
   const sign = rate >= 0 ? '+' : '';
   const cleanPct = tickCount > 1 ? cleanCount / (tickCount - 1) : 0;
-  // Quality tiers — show rate even at low quality, just dim it
-  const tooFewClean = cleanCount < 10;
-  const lowQuality = cleanPct < 0.15;
+  // Quality tiers — hide unreliable results entirely
+  // Below 30% clean OR fewer than 20 clean intervals → result is noise
+  const unreliable = cleanPct < 0.30 || cleanCount < 20 || absRate > 200;
+  const lowQuality = cleanPct < 0.50;
 
-  if (tooFewClean) {
+  if (unreliable) {
     $('rateVal').textContent = '---';
     $('rateVal').className = 'result-value';
   } else {
@@ -1370,7 +1374,7 @@ function updateLiveResults() {
   const copyBtn = $('copyLiveBtn');
   copyBtn.style.display = '';
   copyBtn._liveResult = {
-    rate: tooFewClean ? '---' : `${sign}${rate.toFixed(1)}`,
+    rate: unreliable ? '---' : `${sign}${rate.toFixed(1)}`,
     beatError: tickMultiple > 1 ? 'N/A' : beatError.toFixed(2) + 'ms',
     ampDeg: Math.round(ampDeg),
     tickCount: tickCount,
