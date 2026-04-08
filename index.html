@@ -1172,21 +1172,19 @@ async function startMic() {
     });
 
     sourceNode = audioCtx.createMediaStreamSource(micStream);
-
-    // Biquad HP for analyser visualization only — does NOT feed detection
     filterNode = audioCtx.createBiquadFilter();
     filterNode.type = 'highpass';
     filterNode.frequency.value = 300;
     filterNode.Q.value = 0.7;
+
     analyserNode = audioCtx.createAnalyser();
     analyserNode.fftSize = ANALYSER_SIZE;
     analyserNode.smoothingTimeConstant = 0;
     sourceNode.connect(filterNode);
     filterNode.connect(analyserNode);
 
-    // ScriptProcessorNode receives RAW audio. We apply the same single-pole
-    // IIR HP filter as the file upload path, so live + file analysis use
-    // identical filter chains and produce consistent results.
+    // ScriptProcessorNode receives biquad-filtered audio (good for detection).
+    // File uploads now also use a biquad-equivalent filter so both paths align.
     const SCRIPT_BUF = 4096;
     const CARRY_SIZE = 256;
     scriptNode = audioCtx.createScriptProcessor(SCRIPT_BUF, 1, 1);
@@ -1194,48 +1192,30 @@ async function startMic() {
     carryBuf = null;
     recordedAudio = [];
     recordedSampleRate = audioCtx.sampleRate;
-    // Initialize IIR filter coefficients (matches file upload path)
-    const rc = 1 / (2 * Math.PI * 300);
-    const dt = 1 / recordedSampleRate;
-    iirAlpha = rc / (rc + dt);
-    iirPrevX = 0;
-    iirPrevY = 0;
     scriptNode.onaudioprocess = function(e) {
       const input = e.inputBuffer.getChannelData(0);
       const sr = audioCtx.sampleRate;
 
-      // Apply stateful IIR HP filter (matches file upload path exactly)
-      const filtered = new Float32Array(input.length);
-      let prevY = iirPrevY, prevX = iirPrevX;
-      for (let i = 0; i < input.length; i++) {
-        const x = input[i];
-        const y = iirAlpha * (prevY + x - prevX);
-        filtered[i] = y;
-        prevY = y;
-        prevX = x;
-      }
-      iirPrevY = prevY;
-      iirPrevX = prevX;
-
-      // Buffer filtered audio for file-style analysis (cap at ~120s)
+      // Buffer biquad-filtered audio for file-style analysis (cap at ~120s)
       const maxSamples = sr * 120;
       const currentSize = recordedAudio.reduce((s, c) => s + c.length, 0);
+      const inputCopy = new Float32Array(input);
       if (currentSize < maxSamples) {
-        recordedAudio.push(filtered);
+        recordedAudio.push(inputCopy);
       } else {
         recordedAudio.shift();
-        recordedAudio.push(filtered);
+        recordedAudio.push(inputCopy);
       }
 
       // Prepend carry-over so ticks near buffer boundaries get full lookahead/centroid
       let combined, carryLen;
       if (carryBuf) {
-        combined = new Float32Array(carryBuf.length + filtered.length);
+        combined = new Float32Array(carryBuf.length + input.length);
         combined.set(carryBuf);
-        combined.set(filtered, carryBuf.length);
+        combined.set(input, carryBuf.length);
         carryLen = carryBuf.length;
       } else {
-        combined = filtered;
+        combined = new Float32Array(input);
         carryLen = 0;
       }
 
@@ -1248,7 +1228,7 @@ async function startMic() {
     };
     silentGain = audioCtx.createGain();
     silentGain.gain.value = 0;
-    sourceNode.connect(scriptNode); // RAW source → script (no biquad)
+    filterNode.connect(scriptNode); // biquad-filtered → script
     scriptNode.connect(silentGain);
     silentGain.connect(audioCtx.destination);
 
