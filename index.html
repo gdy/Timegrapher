@@ -572,6 +572,8 @@ let totalSamples = 0; // sample-accurate counter for tick timing
 let carryBuf = null;  // carry-over buffer for cross-boundary tick detection
 let recordedAudio = []; // buffered audio chunks for file-style analysis
 let recordedSampleRate = 0;
+// Stateful IIR HP filter for live mic — matches file upload path exactly
+let iirPrevX = 0, iirPrevY = 0, iirAlpha = 0;
 let wakeLock = null;
 
 // Results log for file uploads
@@ -1170,66 +1172,83 @@ async function startMic() {
     });
 
     sourceNode = audioCtx.createMediaStreamSource(micStream);
+
+    // Biquad HP for analyser visualization only — does NOT feed detection
     filterNode = audioCtx.createBiquadFilter();
     filterNode.type = 'highpass';
     filterNode.frequency.value = 300;
     filterNode.Q.value = 0.7;
-
-    // AnalyserNode for visualization only
     analyserNode = audioCtx.createAnalyser();
     analyserNode.fftSize = ANALYSER_SIZE;
     analyserNode.smoothingTimeConstant = 0;
     sourceNode.connect(filterNode);
     filterNode.connect(analyserNode);
 
-    // ScriptProcessorNode for sample-accurate tick detection
-    // Sequential non-overlapping buffers with perfect sample counting
+    // ScriptProcessorNode receives RAW audio. We apply the same single-pole
+    // IIR HP filter as the file upload path, so live + file analysis use
+    // identical filter chains and produce consistent results.
     const SCRIPT_BUF = 4096;
-    const CARRY_SIZE = 256; // carry-over for cross-boundary peak/centroid detection
+    const CARRY_SIZE = 256;
     scriptNode = audioCtx.createScriptProcessor(SCRIPT_BUF, 1, 1);
     totalSamples = 0;
     carryBuf = null;
     recordedAudio = [];
     recordedSampleRate = audioCtx.sampleRate;
+    // Initialize IIR filter coefficients (matches file upload path)
+    const rc = 1 / (2 * Math.PI * 300);
+    const dt = 1 / recordedSampleRate;
+    iirAlpha = rc / (rc + dt);
+    iirPrevX = 0;
+    iirPrevY = 0;
     scriptNode.onaudioprocess = function(e) {
       const input = e.inputBuffer.getChannelData(0);
       const sr = audioCtx.sampleRate;
 
-      // Buffer raw audio for file-style analysis (cap at ~120s to limit memory)
+      // Apply stateful IIR HP filter (matches file upload path exactly)
+      const filtered = new Float32Array(input.length);
+      let prevY = iirPrevY, prevX = iirPrevX;
+      for (let i = 0; i < input.length; i++) {
+        const x = input[i];
+        const y = iirAlpha * (prevY + x - prevX);
+        filtered[i] = y;
+        prevY = y;
+        prevX = x;
+      }
+      iirPrevY = prevY;
+      iirPrevX = prevX;
+
+      // Buffer filtered audio for file-style analysis (cap at ~120s)
       const maxSamples = sr * 120;
       const currentSize = recordedAudio.reduce((s, c) => s + c.length, 0);
       if (currentSize < maxSamples) {
-        recordedAudio.push(new Float32Array(input));
+        recordedAudio.push(filtered);
       } else {
-        // Drop oldest chunk to maintain rolling buffer
         recordedAudio.shift();
-        recordedAudio.push(new Float32Array(input));
+        recordedAudio.push(filtered);
       }
 
       // Prepend carry-over so ticks near buffer boundaries get full lookahead/centroid
       let combined, carryLen;
       if (carryBuf) {
-        combined = new Float32Array(carryBuf.length + input.length);
+        combined = new Float32Array(carryBuf.length + filtered.length);
         combined.set(carryBuf);
-        combined.set(input, carryBuf.length);
+        combined.set(filtered, carryBuf.length);
         carryLen = carryBuf.length;
       } else {
-        combined = new Float32Array(input);
+        combined = filtered;
         carryLen = 0;
       }
 
       const baseSample = totalSamples - carryLen;
-      // Defer threshold crossings in last CARRY_SIZE samples to next buffer
       detectTicksFromScript(combined, sr, baseSample, combined.length - CARRY_SIZE);
       totalSamples += input.length;
 
-      // Save carry for next buffer
       carryBuf = new Float32Array(CARRY_SIZE);
       carryBuf.set(combined.subarray(combined.length - CARRY_SIZE));
     };
     silentGain = audioCtx.createGain();
     silentGain.gain.value = 0;
-    filterNode.connect(scriptNode);
+    sourceNode.connect(scriptNode); // RAW source → script (no biquad)
     scriptNode.connect(silentGain);
     silentGain.connect(audioCtx.destination);
 
