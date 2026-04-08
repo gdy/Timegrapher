@@ -672,11 +672,11 @@ function processAndDraw() {
   // Tick detection now happens in ScriptProcessorNode callback (sample-accurate)
 
   const now = performance.now();
-  if (now - lastResultsUpdate > 2000) { // analyze every 2s (file-style is expensive)
+  if (now - lastResultsUpdate > 3000) { // analyze every 3s (file-style is expensive)
     lastResultsUpdate = now;
     updateThreshDisplay();
-    updateLiveResults();
-    drawDots();
+    // Defer heavy analysis to next idle frame so UI stays responsive
+    setTimeout(() => { updateLiveResults(); drawDots(); }, 0);
   }
 
   animFrame = requestAnimationFrame(processAndDraw);
@@ -1285,19 +1285,29 @@ function updateLiveResults() {
   $('resultsCard').style.display = '';
 
   // Use file-style analysis on buffered audio — far more accurate than
-  // interval-based analysis on noisy live mic detections
+  // interval-based analysis on noisy live mic detections.
+  // Cap analysis window at 30s to keep main thread responsive.
   let result = null;
   let usedFileAnalysis = false;
   if (recordedAudio.length > 0 && recordedSampleRate > 0) {
-    const totalLen = recordedAudio.reduce((s, c) => s + c.length, 0);
-    if (totalLen >= recordedSampleRate * 5) { // need at least 5s of audio
-      const merged = new Float32Array(totalLen);
-      let off = 0;
-      for (const c of recordedAudio) { merged.set(c, off); off += c.length; }
+    const ANALYSIS_WINDOW_SEC = 30;
+    const maxSamples = recordedSampleRate * ANALYSIS_WINDOW_SEC;
+    let totalLen = recordedAudio.reduce((s, c) => s + c.length, 0);
 
-      // Audio from scriptNode is already biquad-HP filtered at 300Hz —
-      // do not apply another HP filter (would attenuate ticks).
-      // Lower threshold floor (0.0002) for live mic — quieter signals than uploads.
+    if (totalLen >= recordedSampleRate * 5) { // need at least 5s of audio
+      // Take last ANALYSIS_WINDOW_SEC of samples
+      const useLen = Math.min(totalLen, maxSamples);
+      const merged = new Float32Array(useLen);
+      let written = 0;
+      let skipFromHead = totalLen - useLen;
+      for (const c of recordedAudio) {
+        if (skipFromHead >= c.length) { skipFromHead -= c.length; continue; }
+        const src = skipFromHead > 0 ? c.subarray(skipFromHead) : c;
+        skipFromHead = 0;
+        merged.set(src, written);
+        written += src.length;
+      }
+
       const expectedInterval = getExpectedInterval();
       const analysis = analyzeFileWindowed(merged, recordedSampleRate, expectedInterval, 0.0002);
       if (analysis && analysis.result) {
