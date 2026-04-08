@@ -570,6 +570,8 @@ let cooldownUntil = 0;
 let noiseRMS = 0;
 let totalSamples = 0; // sample-accurate counter for tick timing
 let carryBuf = null;  // carry-over buffer for cross-boundary tick detection
+let recordedAudio = []; // buffered audio chunks for file-style analysis
+let recordedSampleRate = 0;
 let wakeLock = null;
 
 // Results log for file uploads
@@ -668,7 +670,7 @@ function processAndDraw() {
   // Tick detection now happens in ScriptProcessorNode callback (sample-accurate)
 
   const now = performance.now();
-  if (now - lastResultsUpdate > 250) {
+  if (now - lastResultsUpdate > 2000) { // analyze every 2s (file-style is expensive)
     lastResultsUpdate = now;
     updateThreshDisplay();
     updateLiveResults();
@@ -1186,9 +1188,22 @@ async function startMic() {
     scriptNode = audioCtx.createScriptProcessor(SCRIPT_BUF, 1, 1);
     totalSamples = 0;
     carryBuf = null;
+    recordedAudio = [];
+    recordedSampleRate = audioCtx.sampleRate;
     scriptNode.onaudioprocess = function(e) {
       const input = e.inputBuffer.getChannelData(0);
       const sr = audioCtx.sampleRate;
+
+      // Buffer raw audio for file-style analysis (cap at ~120s to limit memory)
+      const maxSamples = sr * 120;
+      const currentSize = recordedAudio.reduce((s, c) => s + c.length, 0);
+      if (currentSize < maxSamples) {
+        recordedAudio.push(new Float32Array(input));
+      } else {
+        // Drop oldest chunk to maintain rolling buffer
+        recordedAudio.shift();
+        recordedAudio.push(new Float32Array(input));
+      }
 
       // Prepend carry-over so ticks near buffer boundaries get full lookahead/centroid
       let combined, carryLen;
@@ -1275,22 +1290,47 @@ function updateLiveResults() {
     return;
   }
 
-  // Sliding window: analyze last 30s for stable results (drops early positioning noise)
-  const WINDOW_SEC = 30;
-  let windowTicks = ticks;
-  let windowAmps = tickAmplitudes;
-  const totalDuration = ticks[ticks.length - 1] - ticks[0];
-  if (totalDuration > WINDOW_SEC) {
-    const cutoff = ticks[ticks.length - 1] - WINDOW_SEC;
-    let startIdx = 0;
-    for (let i = ticks.length - 1; i >= 0; i--) {
-      if (ticks[i] < cutoff) { startIdx = i + 1; break; }
+  // Use file-style analysis on buffered audio — far more accurate than
+  // interval-based analysis on noisy live mic detections
+  let result = null;
+  let fileResult = null;
+  if (recordedAudio.length > 0 && recordedSampleRate > 0) {
+    const totalLen = recordedAudio.reduce((s, c) => s + c.length, 0);
+    if (totalLen >= recordedSampleRate * 5) { // need at least 5s of audio
+      const merged = new Float32Array(totalLen);
+      let off = 0;
+      for (const c of recordedAudio) { merged.set(c, off); off += c.length; }
+
+      // High-pass filter at 300Hz (match file path)
+      const rc = 1 / (2 * Math.PI * 300);
+      const dt = 1 / recordedSampleRate;
+      const alpha = rc / (rc + dt);
+      const filtered = new Float32Array(merged.length);
+      filtered[0] = merged[0];
+      for (let i = 1; i < merged.length; i++) {
+        filtered[i] = alpha * (filtered[i - 1] + merged[i] - merged[i - 1]);
+      }
+
+      const expectedInterval = getExpectedInterval();
+      const analysis = analyzeFileWindowed(filtered, recordedSampleRate, expectedInterval);
+      if (analysis && analysis.result) {
+        fileResult = analysis.result;
+        result = {
+          rate: fileResult.rate,
+          beatError: fileResult.beatError,
+          ampDeg: fileResult.ampDeg,
+          avgInterval: fileResult.avgInterval,
+          tickMultiple: fileResult.tickMultiple,
+          tickCount: fileResult.tickCount,
+          cleanCount: fileResult.cleanCount,
+          duration: fileResult.duration
+        };
+      }
     }
-    windowTicks = ticks.slice(startIdx);
-    windowAmps = tickAmplitudes.slice(startIdx);
   }
 
-  const result = analyzeTickData(windowTicks, windowAmps, getExpectedInterval());
+  // Fallback to detection-based analysis if buffered audio not ready
+  if (!result) result = analyzeTickData(ticks, tickAmplitudes, getExpectedInterval());
   if (!result) return;
 
   const { rate, beatError, ampDeg, avgInterval, tickMultiple, cleanCount, tickCount } = result;
@@ -1635,6 +1675,7 @@ function resetMic() {
   lastProcessedTime = 0;
   noiseRMS = 0;
   carryBuf = null;
+  recordedAudio = [];
   $('rateVal').textContent = '--';
   $('rateVal').className = 'result-value';
   $('beatErrVal').textContent = '--';
