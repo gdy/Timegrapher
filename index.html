@@ -1280,21 +1280,15 @@ function stopMic() {
   drawDots();
 }
 
-// --- Live mic results (same as before) ---
+// --- Live mic results ---
 function updateLiveResults() {
   $('timingCard').style.display = '';
   $('resultsCard').style.display = '';
 
-  if (ticks.length < 4) {
-    $('statusText').textContent = `Collecting ticks... (${ticks.length} detected)`;
-    $('statusText').className = 'status active';
-    return;
-  }
-
   // Use file-style analysis on buffered audio — far more accurate than
   // interval-based analysis on noisy live mic detections
   let result = null;
-  let fileResult = null;
+  let usedFileAnalysis = false;
   if (recordedAudio.length > 0 && recordedSampleRate > 0) {
     const totalLen = recordedAudio.reduce((s, c) => s + c.length, 0);
     if (totalLen >= recordedSampleRate * 5) { // need at least 5s of audio
@@ -1308,26 +1302,25 @@ function updateLiveResults() {
       const expectedInterval = getExpectedInterval();
       const analysis = analyzeFileWindowed(merged, recordedSampleRate, expectedInterval, 0.0002);
       if (analysis && analysis.result) {
-        fileResult = analysis.result;
-        result = {
-          rate: fileResult.rate,
-          beatError: fileResult.beatError,
-          ampDeg: fileResult.ampDeg,
-          avgInterval: fileResult.avgInterval,
-          tickMultiple: fileResult.tickMultiple,
-          tickCount: fileResult.tickCount,
-          cleanCount: fileResult.cleanCount,
-          duration: fileResult.duration
-        };
+        result = analysis.result;
+        usedFileAnalysis = true;
       }
     }
   }
 
   // Fallback to detection-based analysis if buffered audio not ready
-  if (!result) result = analyzeTickData(ticks, tickAmplitudes, getExpectedInterval());
-  if (!result) return;
+  if (!result && ticks.length >= 4) {
+    result = analyzeTickData(ticks, tickAmplitudes, getExpectedInterval());
+  }
 
-  const { rate, beatError, ampDeg, avgInterval, tickMultiple, cleanCount, tickCount } = result;
+  if (!result) {
+    const bufSec = recordedAudio.reduce((s, c) => s + c.length, 0) / Math.max(1, recordedSampleRate);
+    $('statusText').textContent = `Buffering audio... (${bufSec.toFixed(1)}s / 5s minimum)`;
+    $('statusText').className = 'status active';
+    return;
+  }
+
+  const { rate, beatError, ampDeg, avgInterval, tickMultiple, cleanCount, tickCount, duration } = result;
   const absRate = Math.abs(rate);
   const sign = rate >= 0 ? '+' : '';
   const cleanPct = tickCount > 1 ? cleanCount / (tickCount - 1) : 0;
@@ -1351,31 +1344,27 @@ function updateLiveResults() {
     $('beatErrVal').className = 'result-value ' + (beatError < 0.5 ? 'good' : beatError < 1.5 ? 'warn' : 'bad');
   }
   $('ampVal').textContent = Math.round(ampDeg);
-  $('tickCountVal').textContent = ticks.length;
+  $('tickCountVal').textContent = tickCount;
   $('avgIntVal').textContent = (avgInterval * 1000).toFixed(3);
 
-  const duration = ticks[ticks.length - 1] - ticks[0];
-  let statusMsg = `${ticks.length} ticks over ${duration.toFixed(1)}s`;
-  if (windowTicks !== ticks) {
-    const winDur = windowTicks[windowTicks.length - 1] - windowTicks[0];
-    statusMsg += ` (last ${winDur.toFixed(0)}s: ${windowTicks.length} ticks)`;
-  }
+  let statusMsg = `${tickCount} ticks over ${duration.toFixed(1)}s`;
   if (tickMultiple > 1) statusMsg += ` N=${tickMultiple}`;
   statusMsg += ` — ${cleanCount} clean (${(cleanPct * 100).toFixed(0)}%)`;
   if (lowQuality && tickCount > 10) {
     statusMsg += ' — weak signal, move watch closer to mic';
   }
+  if (usedFileAnalysis) statusMsg += ' [audio analysis]';
   $('statusText').textContent = statusMsg;
   $('statusText').className = 'status active';
 
-  // Store for copy button
+  // Store for copy button — show whenever we have a result
   const copyBtn = $('copyLiveBtn');
   copyBtn.style.display = '';
   copyBtn._liveResult = {
-    rate: lowQuality && tickCount > 10 ? '---' : `${sign}${rate.toFixed(1)}`,
+    rate: tooFewClean ? '---' : `${sign}${rate.toFixed(1)}`,
     beatError: tickMultiple > 1 ? 'N/A' : beatError.toFixed(2) + 'ms',
     ampDeg: Math.round(ampDeg),
-    tickCount: ticks.length,
+    tickCount: tickCount,
     avgInterval: (avgInterval * 1000).toFixed(3),
     duration: duration.toFixed(1),
     cleanCount, cleanPct: (cleanPct * 100).toFixed(0),
@@ -1680,6 +1669,9 @@ function resetMic() {
   $('statusText').textContent = '';
   $('timingCard').style.display = 'none';
   $('resultsCard').style.display = 'none';
+  const cb = $('copyLiveBtn');
+  cb.style.display = 'none';
+  cb._liveResult = null;
   levelBar.style.width = '0%';
   $('tipText').innerHTML = defaultTip;
 
