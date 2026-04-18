@@ -525,7 +525,15 @@ const $ = id => document.getElementById(id);
   const isWebView = /FBAN|FBAV|Instagram|Twitter|Line\/|Snapchat|LinkedIn|GSA\//.test(ua);
 
   if (!isIOS) {
-    if (hasGUM && hasAudioCtx && !isWebView) $('webviewOverlay').classList.add('hidden');
+    if (hasGUM && hasAudioCtx && !isWebView) {
+      $('webviewOverlay').classList.add('hidden');
+    } else if (isWebView) {
+      // Android in-app browser — adjust iOS-specific text to be platform-agnostic
+      const h1 = $('webviewOverlay').querySelector('h1');
+      if (h1) h1.textContent = 'Open in your browser';
+      $('overlayMsg').textContent = 'This in-app browser cannot access the microphone. Open the link in Chrome, Firefox, or another standalone browser.';
+      $('overlaySteps').style.display = 'none';
+    }
     return;
   }
 
@@ -572,8 +580,7 @@ let totalSamples = 0; // sample-accurate counter for tick timing
 let carryBuf = null;  // carry-over buffer for cross-boundary tick detection
 let recordedAudio = []; // buffered audio chunks for file-style analysis
 let recordedSampleRate = 0;
-// Stateful IIR HP filter for live mic — matches file upload path exactly
-let iirPrevX = 0, iirPrevY = 0, iirAlpha = 0;
+let isStartingMic = false;
 let wakeLock = null;
 
 // Results log for file uploads
@@ -634,7 +641,6 @@ function getMinTickGap() {
 // --- Waveform + tick detection via rAF polling ---
 let timeDomainBuf = null;
 let animFrame = null;
-let lastProcessedTime = 0;
 let lastResultsUpdate = 0;
 
 function processAndDraw() {
@@ -1165,6 +1171,15 @@ function releaseWakeLock() {
 // --- Microphone ---
 async function startMic() {
   if (isRecording) { stopMic(); return; }
+  if (isStartingMic) return; // guard against double-click during async startup
+  isStartingMic = true;
+  micBtn.textContent = 'Starting...';
+  // Fresh session: clear tick state so previous session's timestamps don't
+  // suppress new detections (new AudioContext resets sample clock to 0).
+  ticks = [];
+  tickAmplitudes = [];
+  lastTickTime = 0;
+  cooldownUntil = 0;
   try {
     const ACtx = window.AudioContext || window.webkitAudioContext;
     audioCtx = new ACtx();
@@ -1186,8 +1201,8 @@ async function startMic() {
     sourceNode.connect(filterNode);
     filterNode.connect(analyserNode);
 
-    // ScriptProcessorNode receives biquad-filtered audio (good for detection).
-    // File uploads now also use a biquad-equivalent filter so both paths align.
+    // ScriptProcessorNode receives biquad-filtered audio (2-pole HP at 300Hz).
+    // File uploads use a simpler 1-pole IIR HP — similar but not identical response.
     const SCRIPT_BUF = 4096;
     const CARRY_SIZE = 256;
     scriptNode = audioCtx.createScriptProcessor(SCRIPT_BUF, 1, 1);
@@ -1236,10 +1251,10 @@ async function startMic() {
     silentGain.connect(audioCtx.destination);
 
     timeDomainBuf = null;
-    lastProcessedTime = 0;
     lastResultsUpdate = 0;
     noiseRMS = 0;
     isRecording = true;
+    isStartingMic = false;
     micBtn.textContent = 'Stop';
     micBtn.classList.add('recording');
     $('tipText').style.color = '';
@@ -1253,6 +1268,8 @@ async function startMic() {
     animFrame = requestAnimationFrame(processAndDraw);
   } catch (err) {
     console.error('Mic error:', err);
+    isStartingMic = false;
+    micBtn.textContent = 'Start Microphone';
     if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
     const msg = err.name === 'NotAllowedError' ? 'Microphone permission denied. Check Settings > Safari > Microphone.'
       : err.name === 'NotFoundError' ? 'No microphone found.'
@@ -1327,8 +1344,13 @@ function updateLiveResults() {
 
   if (!result) {
     const bufSec = recordedAudio.reduce((s, c) => s + c.length, 0) / Math.max(1, recordedSampleRate);
-    $('statusText').textContent = `Buffering audio... (${bufSec.toFixed(1)}s / 5s minimum)`;
-    $('statusText').className = 'status active';
+    if (isRecording) {
+      $('statusText').textContent = `Buffering audio... (${bufSec.toFixed(1)}s / 5s minimum)`;
+      $('statusText').className = 'status active';
+    } else {
+      $('statusText').textContent = 'Not enough audio captured for analysis.';
+      $('statusText').className = 'status';
+    }
     return;
   }
 
@@ -1668,7 +1690,6 @@ function resetMic() {
   tickAmplitudes = [];
   lastTickTime = 0;
   cooldownUntil = 0;
-  lastProcessedTime = 0;
   noiseRMS = 0;
   carryBuf = null;
   recordedAudio = [];
