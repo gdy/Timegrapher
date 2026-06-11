@@ -512,6 +512,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 
 // --- Environment check ---
 (function checkEnvironment() {
@@ -533,6 +534,13 @@ const $ = id => document.getElementById(id);
       if (h1) h1.textContent = 'Open in your browser';
       $('overlayMsg').textContent = 'This in-app browser cannot access the microphone. Open the link in Chrome, Firefox, or another standalone browser.';
       $('overlaySteps').style.display = 'none';
+    } else {
+      // Capable browser but missing APIs — usually a non-secure (http://) page,
+      // since getUserMedia requires a secure context. Don't show iOS steps.
+      const h1 = $('webviewOverlay').querySelector('h1');
+      if (h1) h1.textContent = 'Browser not supported';
+      $('overlayMsg').textContent = 'This browser cannot access the microphone or Web Audio API here. Use a current Chrome, Edge, Firefox, or Safari over https (or open the file locally).';
+      $('overlaySteps').style.display = 'none';
     }
     return;
   }
@@ -551,11 +559,14 @@ const $ = id => document.getElementById(id);
   const isSafari = /Safari\//.test(ua) && !/CriOS|FxiOS|OPiOS|EdgiOS/.test(ua);
   const isChrome = /CriOS/.test(ua);
   const isFirefox = /FxiOS/.test(ua);
+  // Home-screen web app (apple-mobile-web-app-capable): UA drops the Safari/
+  // token in standalone mode, but it's still Safari with full API access.
+  const isStandalone = navigator.standalone === true;
 
   // Additional WKWebView heuristic: real Safari has Safari/ without other browser tokens,
   // but WKWebView may also claim Safari/. Check for missing __safari_reader__ or
   // use feature detection: WKWebView lacks the download attribute on anchors in older iOS
-  if ((isSafari || isChrome || isFirefox) && hasGUM && hasAudioCtx) {
+  if ((isSafari || isChrome || isFirefox || isStandalone) && hasGUM && hasAudioCtx) {
     $('webviewOverlay').classList.add('hidden');
   }
 })();
@@ -616,8 +627,17 @@ function sizeCanvas(canvas) {
   canvas.width = Math.round(rect.width * devicePixelRatio);
   canvas.height = Math.round(rect.height * devicePixelRatio);
 }
-window.addEventListener('resize', () => { sizeCanvas(waveCanvas); sizeCanvas(dotCanvas); });
-setTimeout(() => { sizeCanvas(waveCanvas); sizeCanvas(dotCanvas); }, 100);
+function paintIdleCanvases() {
+  waveCtx.fillStyle = '#0d1220';
+  waveCtx.fillRect(0, 0, waveCanvas.width, waveCanvas.height);
+  drawDots(); // repaints retained ticks; no-op when empty or hidden
+}
+window.addEventListener('resize', () => {
+  sizeCanvas(waveCanvas); sizeCanvas(dotCanvas);
+  // Resizing clears canvas content — repaint when the rAF loop isn't running
+  if (!isRecording) paintIdleCanvases();
+});
+setTimeout(() => { sizeCanvas(waveCanvas); sizeCanvas(dotCanvas); paintIdleCanvases(); }, 100);
 
 // --- Threshold / sensitivity ---
 function getMultiplier() {
@@ -920,7 +940,7 @@ function analyzeFile(samples, sr, fileNoiseRMS, expectedInterval, threshFloor) {
     result: {
       rate: medianRate, hlRate, beatError, ampDeg, avgInterval,
       tickMultiple: bestDet.n, tickCount: tickTimes.length,
-      cleanCount: bestDet.clean, duration
+      cleanCount: bestDet.clean, duration, tickTimes
     },
     debug: `N=${useN} (${allNs}), [${rateList}]`
   };
@@ -967,6 +987,8 @@ function analyzeFileWindowed(samples, sr, expectedInterval, threshFloor) {
         ampDeg: result.result.ampDeg,
         avgInterval: result.result.avgInterval,
         quality: result.result.cleanCount / Math.max(1, result.result.tickCount - 1),
+        startSec,
+        times: result.result.tickTimes,
         debug: result.debug
       });
     }
@@ -1027,9 +1049,25 @@ function analyzeFileWindowed(samples, sr, expectedInterval, threshFloor) {
     if (dist < bestDist) { bestDist = dist; bestWin = w; }
   }
 
-  // Aggregate stats from kept windows only
-  const totalTicks = kept.reduce((s, w) => s + w.tickCount, 0);
-  const totalClean = kept.reduce((s, w) => s + w.cleanCount, 0);
+  // Aggregate stats from kept windows only. Overlapping windows see the same
+  // physical ticks twice — merge timestamps and dedup so tickCount is honest.
+  const mergedTimes = [];
+  for (const w of kept)
+    for (const t of w.times) mergedTimes.push(w.startSec + t);
+  mergedTimes.sort((a, b) => a - b);
+  // Duplicates from adjacent windows land within ~1ms; distinct ticks are
+  // >= 0.7x expectedInterval apart (detection minGap), so 0.35x splits them.
+  const dedupTol = expectedInterval * 0.35;
+  let totalTicks = 0, lastT = -Infinity;
+  for (const t of mergedTimes) {
+    if (t - lastT > dedupTol) { totalTicks++; lastT = t; }
+  }
+  // Scale clean-interval count to the deduped tick count, preserving the
+  // kept windows' overall clean ratio (each window has tickCount-1 intervals).
+  const overlapClean = kept.reduce((s, w) => s + w.cleanCount, 0);
+  const overlapIntervals = kept.reduce((s, w) => s + Math.max(0, w.tickCount - 1), 0);
+  const cleanRatio = overlapIntervals > 0 ? overlapClean / overlapIntervals : 0;
+  const totalClean = Math.min(Math.max(0, totalTicks - 1), Math.round(cleanRatio * Math.max(0, totalTicks - 1)));
 
   const winRates = windows.map((w, i) => {
     const qualFail = w.quality < qualityMin;
@@ -1211,8 +1249,10 @@ async function startMic() {
     recordedAudio = [];
     recordedSampleRate = audioCtx.sampleRate;
     scriptNode.onaudioprocess = function(e) {
+      // A queued callback can fire after stopMic() nulls audioCtx — bail out
+      if (!isRecording) return;
       const input = e.inputBuffer.getChannelData(0);
-      const sr = audioCtx.sampleRate;
+      const sr = recordedSampleRate;
 
       // Buffer biquad-filtered audio for file-style analysis (cap at ~120s)
       const maxSamples = sr * 120;
@@ -1270,7 +1310,11 @@ async function startMic() {
     console.error('Mic error:', err);
     isStartingMic = false;
     micBtn.textContent = 'Start Microphone';
+    // Release anything acquired before the failure — otherwise the mic stays
+    // live (recording indicator on) with no way to turn it off from the UI.
+    if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
     if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
+    sourceNode = null; filterNode = null; analyserNode = null; scriptNode = null; silentGain = null;
     const msg = err.name === 'NotAllowedError' ? 'Microphone permission denied. Check Settings > Safari > Microphone.'
       : err.name === 'NotFoundError' ? 'No microphone found.'
       : err.name === 'NotSupportedError' ? 'Microphone not available in this browser. Try opening in Safari.'
@@ -1280,7 +1324,7 @@ async function startMic() {
   }
 }
 
-function stopMic() {
+function stopMic(skipAnalysis) {
   isRecording = false;
   micBtn.textContent = 'Start Microphone';
   micBtn.classList.remove('recording');
@@ -1295,8 +1339,10 @@ function stopMic() {
   if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
   timeDomainBuf = null;
   releaseWakeLock();
-  updateLiveResults();
-  drawDots();
+  if (!skipAnalysis) { // Reset discards everything — skip the final heavy pass
+    updateLiveResults();
+    drawDots();
+  }
 }
 
 // --- Live mic results ---
@@ -1416,6 +1462,7 @@ async function processFiles(files) {
   for (const file of files) {
     $('tipText').style.color = '';
     $('tipText').textContent = `Processing "${file.name}"...`;
+    const safeName = file.name.replace(/[<>&"']/g, '').replace(/\.[^.]+$/, '') || 'audio';
 
     try {
       const arrayBuf = await file.arrayBuffer();
@@ -1441,8 +1488,6 @@ async function processFiles(files) {
       // Analyze file — use windowed analysis for longer recordings
       const analysis = analyzeFileWindowed(samples, sr, expectedInterval);
 
-      const safeName = file.name.replace(/[<>&"']/g, '').replace(/\.[^.]+$/, '');
-
       resultsLog.push({
         name: safeName,
         bph: bph,
@@ -1454,7 +1499,6 @@ async function processFiles(files) {
 
     } catch (err) {
       console.error('File error:', err);
-      const safeName = file.name.replace(/[<>&"']/g, '').replace(/\.[^.]+$/, '');
       resultsLog.push({
         name: safeName,
         bph: bph,
@@ -1491,7 +1535,7 @@ function renderLog() {
           <span class="result-entry-name">${entry.name}</span>
           <span class="result-entry-rate bad">Error</span>
         </div>
-        <div class="result-entry-details">${entry.error}</div>`;
+        <div class="result-entry-details">${esc(entry.error)}</div>`;
     } else if (!entry.result) {
       div.innerHTML = `
         <div class="result-entry-header">
@@ -1537,7 +1581,7 @@ function copyResults() {
     } else {
       const r = entry.result;
       const sign = r.rate >= 0 ? '+' : '';
-      lines.push(`${entry.name}: ${sign}${r.rate.toFixed(1)} s/d | Beat error: ${r.beatError.toFixed(2)}ms | ${entry.bph.toLocaleString()} BPH | ${r.tickCount} ticks${entry.debug ? ' | ' + entry.debug : ''}`);
+      lines.push(`${entry.name}: ${sign}${r.rate.toFixed(1)} s/d | Beat error: ${r.tickMultiple > 1 ? 'N/A' : r.beatError.toFixed(2) + 'ms'} | ${entry.bph.toLocaleString()} BPH | ${r.tickCount} ticks${entry.debug ? ' | ' + entry.debug : ''}`);
       if (r.tickMultiple > 1) {
         lines.push(`  (detecting every ${r.tickMultiple}${r.tickMultiple===2?'nd':r.tickMultiple===3?'rd':'th'} beat)`);
       }
@@ -1612,8 +1656,8 @@ function drawDots() {
   dotCtx.fillStyle = '#4a5a7a';
   dotCtx.font = `${10 * devicePixelRatio}px sans-serif`;
   dotCtx.textAlign = 'left';
-  dotCtx.fillText(`+${maxDev.toFixed(2)}ms`, 4, 14 * devicePixelRatio);
-  dotCtx.fillText(`-${maxDev.toFixed(2)}ms`, 4, h - 4);
+  dotCtx.fillText(`+${maxDev.toFixed(2)}ms`, 4 * devicePixelRatio, 14 * devicePixelRatio);
+  dotCtx.fillText(`-${maxDev.toFixed(2)}ms`, 4 * devicePixelRatio, h - 6 * devicePixelRatio);
 }
 
 // --- Events ---
@@ -1685,7 +1729,7 @@ const defaultTip = `<strong>Phone:</strong> Place caseback directly on the phone
     Record 15+ seconds in a quiet environment. Select multiple files to compare watches.`;
 
 function resetMic() {
-  stopMic();
+  stopMic(true);
   ticks = [];
   tickAmplitudes = [];
   lastTickTime = 0;

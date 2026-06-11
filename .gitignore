@@ -1,0 +1,12 @@
+# Local tooling config
+.claude/
+
+# Dev diagnostics — not for the public site
+PrivateTools/
+
+# Personal test recordings
+TickTocks/
+
+# OS noise
+Thumbs.db
+.DS_Store
