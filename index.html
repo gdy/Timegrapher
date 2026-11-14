@@ -295,7 +295,7 @@
 
   .tick-dot-strip {
     width: 100%;
-    height: 50px;
+    height: 90px;
     background: #0a0a0a;
     border: 1px solid #222;
     border-radius: 2px;
@@ -429,12 +429,12 @@
     <option value="36000">36,000 bph (5 Hz)</option>
   </select>
 
-  <label for="sensitivity">Mic Sensitivity</label>
+  <label for="liftAngle">Lift Angle</label>
   <div class="range-row">
-    <input type="range" id="sensitivity" min="1" max="100" value="90">
-    <span class="range-val" id="sensVal">90</span>
+    <input type="range" id="liftAngle" min="30" max="70" value="52">
+    <span class="range-val" id="liftVal">52°</span>
   </div>
-  <div class="threshold-info" id="threshInfo"></div>
+  <div class="threshold-info">Used for amplitude only. Most movements are 50–52°; look up your caliber.</div>
 </div>
 
 <!-- Controls -->
@@ -456,7 +456,7 @@
 
 <!-- Live mic timing strip + results (shown during mic recording) -->
 <div class="card" id="timingCard" style="display:none;">
-  <h2>Timing Diagram</h2>
+  <h2>Timing Trace <span style="text-transform:none;letter-spacing:0;"><span style="color:#00d4ff;">&#9679;</span> tick <span style="color:#ffab00;">&#9679;</span> tock</span></h2>
   <div class="tick-dot-strip"><canvas id="dotCanvas"></canvas></div>
   <div class="btn-row" style="justify-content:center;">
     <button class="btn-reset" id="resetBtn">Reset</button>
@@ -479,12 +479,12 @@
     <div class="result-box">
       <div class="result-label">Amplitude</div>
       <div class="result-value" id="ampVal">--</div>
-      <div class="result-unit">estimated &deg;</div>
+      <div class="result-unit">degrees</div>
     </div>
     <div class="result-box">
-      <div class="result-label">Ticks Detected</div>
+      <div class="result-label">Beats Analyzed</div>
       <div class="result-value" id="tickCountVal">--</div>
-      <div class="result-unit">ticks</div>
+      <div class="result-unit">beats</div>
     </div>
     <div class="result-box">
       <div class="result-label">Avg Interval</div>
@@ -556,19 +556,9 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', 
   // Show overlay for any other known WebView
   if (isWebView) return;
 
-  const isSafari = /Safari\//.test(ua) && !/CriOS|FxiOS|OPiOS|EdgiOS/.test(ua);
-  const isChrome = /CriOS/.test(ua);
-  const isFirefox = /FxiOS/.test(ua);
-  // Home-screen web app (apple-mobile-web-app-capable): UA drops the Safari/
-  // token in standalone mode, but it's still Safari with full API access.
-  const isStandalone = navigator.standalone === true;
-
-  // Additional WKWebView heuristic: real Safari has Safari/ without other browser tokens,
-  // but WKWebView may also claim Safari/. Check for missing __safari_reader__ or
-  // use feature detection: WKWebView lacks the download attribute on anchors in older iOS
-  if ((isSafari || isChrome || isFirefox || isStandalone) && hasGUM && hasAudioCtx) {
-    $('webviewOverlay').classList.add('hidden');
-  }
+  // Every iOS browser is WebKit, so the APIs decide — not the browser's name
+  // (a name whitelist locked out Edge, Opera and others that work fine).
+  if (hasGUM && hasAudioCtx) $('webviewOverlay').classList.add('hidden');
 })();
 
 // --- State ---
@@ -580,19 +570,17 @@ let analyserNode = null;
 let scriptNode = null;
 let silentGain = null;
 let isRecording = false;
-let ticks = [];
-let tickAmplitudes = [];
 const ANALYSER_SIZE = 4096;
+const LIVE_WINDOW_SEC = 30; // live results cover the most recent 30 s
+const LIVE_MIN_SEC = 5;
 
-let lastTickTime = 0;
-let cooldownUntil = 0;
-let noiseRMS = 0;
-let totalSamples = 0; // sample-accurate counter for tick timing
-let carryBuf = null;  // carry-over buffer for cross-boundary tick detection
-let recordedAudio = []; // buffered audio chunks for file-style analysis
+let recordedAudio = []; // buffered mic chunks, trimmed to LIVE_WINDOW_SEC
+let recordedLen = 0;
 let recordedSampleRate = 0;
 let isStartingMic = false;
 let wakeLock = null;
+let liveTrace = null;   // { points, interval } from the last live analysis
+let liveBphHint = null; // { bph, suggestion } cached while the pattern mismatches
 
 // Results log for file uploads
 const resultsLog = [];
@@ -602,24 +590,20 @@ const micBtn = $('micBtn');
 const fileBtn = $('fileBtn');
 const fileInput = $('fileInput');
 const bphSelect = $('bph');
-const sensSlider = $('sensitivity');
-const sensValEl = $('sensVal');
+const liftSlider = $('liftAngle');
+const liftValEl = $('liftVal');
 const waveCanvas = $('waveCanvas');
 const waveCtx = waveCanvas.getContext('2d');
 const dotCanvas = $('dotCanvas');
 const dotCtx = dotCanvas.getContext('2d');
 const resetBtn = $('resetBtn');
 const levelBar = $('levelBar');
-const threshInfo = $('threshInfo');
 
-function updateThreshDisplay() {
-  sensValEl.textContent = sensSlider.value;
-  const thr = getThreshold();
-  const mult = getMultiplier();
-  threshInfo.textContent = `Threshold: ${thr.toFixed(4)} (${mult.toFixed(1)}x noise floor)`;
+function updateLiftDisplay() {
+  liftValEl.textContent = liftSlider.value + '°';
 }
-sensSlider.oninput = updateThreshDisplay;
-updateThreshDisplay();
+liftSlider.oninput = updateLiftDisplay;
+updateLiftDisplay();
 
 // --- Canvas sizing ---
 function sizeCanvas(canvas) {
@@ -630,7 +614,7 @@ function sizeCanvas(canvas) {
 function paintIdleCanvases() {
   waveCtx.fillStyle = '#0d1220';
   waveCtx.fillRect(0, 0, waveCanvas.width, waveCanvas.height);
-  drawDots(); // repaints retained ticks; no-op when empty or hidden
+  drawTrace(); // repaints the retained trace; no-op when empty or hidden
 }
 window.addEventListener('resize', () => {
   sizeCanvas(waveCanvas); sizeCanvas(dotCanvas);
@@ -639,26 +623,15 @@ window.addEventListener('resize', () => {
 });
 setTimeout(() => { sizeCanvas(waveCanvas); sizeCanvas(dotCanvas); paintIdleCanvases(); }, 100);
 
-// --- Threshold / sensitivity ---
-function getMultiplier() {
-  const s = sensSlider.value / 100;
-  // At max (100): 1.5× noise floor. At min (0): 15×
-  return 1.5 + (1 - s) * 13.5;
-}
-
-function getThreshold() {
-  return Math.max(0.0002, noiseRMS * getMultiplier());
-}
-
 function getExpectedInterval() {
   return 3600 / parseInt(bphSelect.value);
 }
 
-function getMinTickGap() {
-  return getExpectedInterval() * 0.7; // match file path — suppresses false detections between real ticks
+function getLiftAngle() {
+  return parseFloat(liftSlider.value);
 }
 
-// --- Waveform + tick detection via rAF polling ---
+// --- Waveform + level meter via rAF polling ---
 let timeDomainBuf = null;
 let animFrame = null;
 let lastResultsUpdate = 0;
@@ -689,513 +662,416 @@ function processAndDraw() {
     const a = Math.abs(timeDomainBuf[i]);
     if (a > maxLevel) maxLevel = a;
   }
-
-  const thr = getThreshold();
-  const pct = Math.min(100, maxLevel * 300);
-  levelBar.style.width = pct + '%';
-  levelBar.style.background = maxLevel > thr ? '#00e676' : '#00d4ff';
-
-  // Tick detection now happens in ScriptProcessorNode callback (sample-accurate)
+  levelBar.style.width = Math.min(100, maxLevel * 300) + '%';
 
   const now = performance.now();
-  if (now - lastResultsUpdate > 3000) { // analyze every 3s (file-style is expensive)
+  if (now - lastResultsUpdate > 3000) { // analyze every 3s
     lastResultsUpdate = now;
-    updateThreshDisplay();
-    // Defer heavy analysis to next idle frame so UI stays responsive
-    setTimeout(() => { updateLiveResults(); drawDots(); }, 0);
+    // Defer heavy analysis to the next task so the frame paints first. Reset
+    // may land in between — don't resurrect the cards it just hid.
+    setTimeout(() => { if (isRecording) { updateLiveResults(); drawTrace(); } }, 0);
   }
 
   animFrame = requestAnimationFrame(processAndDraw);
 }
 
-// Sample-accurate tick detection via ScriptProcessorNode
-// baseSample = running count of samples since recording start
-function detectTicksFromScript(samples, sampleRate, baseSample, detectLimit) {
-  const threshold = getThreshold();
-  const minGapSamples = Math.floor(getMinTickGap() * sampleRate);
-  if (detectLimit === undefined) detectLimit = samples.length;
+// --- Analysis engine: epoch folding ---
+// A tick is far too quiet in a phone recording to time one at a time, so
+// instead the energy envelope is folded at the watch's period: hundreds of
+// beats stack into one clean average beat pattern. The period that makes
+// the stack sharpest gives the rate; the pattern itself gives beat error
+// and amplitude.
 
-  // Update noise floor from this buffer
-  const absSamples = [];
-  for (let i = 0; i < samples.length; i += 4) absSamples.push(Math.abs(samples[i]));
-  absSamples.sort((a, b) => a - b);
-  const bufNoise = absSamples[Math.floor(absSamples.length * 0.5)] * 1.48;
-  noiseRMS = noiseRMS === 0 ? bufNoise : noiseRMS * 0.9 + bufNoise * 0.1;
+const TG = {
+  FINE_BIN_SEC: 0.000125,   // envelope resolution
+  COARSE_FACTOR: 8,         // coarse envelope = 1 ms bins
+  PHASE_BIN_SEC: 0.00025,   // folded-profile resolution
+  MAX_RATE: 600,            // search range, s/d
+  MIN_CONTRAST: 3,          // on-period vs off-period fold sharpness
+  MIN_CORR: 0.2,            // segment-vs-reference profile correlation
+  MIN_DURATION: 4,          // seconds
+  BPH_OPTIONS: [18000, 21600, 25200, 28800, 36000]
+};
 
-  for (let i = 0; i < detectLimit; i++) {
-    const absVal = Math.abs(samples[i]);
-    if (absVal > threshold) {
-      const globalSample = baseSample + i;
-      const tickTime = globalSample / sampleRate;
-      if (tickTime - lastTickTime >= getMinTickGap() && tickTime > cooldownUntil) {
-        // Peak finding with lookahead
-        let peak = absVal;
-        const lookAhead = Math.min(128, samples.length - i);
-        let peakIdx = i;
-        for (let j = 1; j < lookAhead; j++) {
-          if (Math.abs(samples[i + j]) > peak) {
-            peak = Math.abs(samples[i + j]);
-            peakIdx = i + j;
-          }
-        }
-        // Sub-sample refinement: energy centroid around peak
-        const hw = 48;
-        let swt = 0, sw = 0;
-        for (let j = Math.max(0, peakIdx - hw); j <= Math.min(samples.length - 1, peakIdx + hw); j++) {
-          const w = samples[j] * samples[j];
-          swt += j * w; sw += w;
-        }
-        const refinedGlobal = baseSample + (sw > 0 ? swt / sw : peakIdx);
-        const refinedTime = refinedGlobal / sampleRate;
-
-        ticks.push(refinedTime);
-        tickAmplitudes.push(peak);
-        lastTickTime = refinedTime;
-        cooldownUntil = refinedTime + getMinTickGap() * 0.6;
-        i = peakIdx + Math.floor(minGapSamples * 0.3);
-      }
-    }
+function tgHighPass(x, sr, fc) {
+  const w0 = 2 * Math.PI * fc / sr, c = Math.cos(w0), al = Math.sin(w0) / (2 * 0.7071);
+  const a0 = 1 + al;
+  const b0 = (1 + c) / 2 / a0, b1 = -(1 + c) / a0, a1 = -2 * c / a0, a2 = (1 - al) / a0;
+  const y = new Float32Array(x.length);
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  for (let i = 0; i < x.length; i++) {
+    const v = b0 * (x[i] + x2) + b1 * x1 - a1 * y1 - a2 * y2;
+    x2 = x1; x1 = x[i]; y2 = y1; y1 = v; y[i] = v;
   }
+  return y;
 }
 
-// --- Tick detection on a sample buffer (for file analysis) ---
-function detectTicksInSamples(samples, sr, threshold, minGap) {
-  const tickTimes = [], tickAmps = [];
-  let lastTick = -minGap, cooldown = 0;
-  for (let i = 0; i < samples.length; i++) {
-    const absVal = Math.abs(samples[i]);
-    if (absVal > threshold) {
-      const t = i / sr;
-      if (t - lastTick >= minGap && t > cooldown) {
-        let peak = absVal, peakIdx = i;
-        const lookAhead = Math.min(128, samples.length - i);
-        for (let j = 1; j < lookAhead; j++) {
-          if (Math.abs(samples[i + j]) > peak) { peak = Math.abs(samples[i + j]); peakIdx = i + j; }
-        }
-        const peakTime = peakIdx / sr;
-        tickTimes.push(peakTime);
-        tickAmps.push(peak);
-        lastTick = peakTime;
-        cooldown = peakTime + minGap * 0.6;
-        i = peakIdx + Math.floor(minGap * sr * 0.3);
-      }
-    }
-  }
-  return { tickTimes, tickAmps };
+function tgMedian(arr) {
+  const s = Float64Array.from(arr).sort();
+  const n = s.length;
+  if (!n) return 0;
+  return n % 2 ? s[n >> 1] : (s[n / 2 - 1] + s[n / 2]) / 2;
 }
 
-// --- Analyze file: peak detection with iterative median refinement ---
-// Uses increased minGap (0.7x) to suppress false between-tick detections,
-// then iteratively narrows the interval filter to converge on the true rate.
-function analyzeFile(samples, sr, fileNoiseRMS, expectedInterval, threshFloor) {
-  const minGap = expectedInterval * 0.7; // suppress false detections between real ticks
-  const detections = [];
-  const floor = threshFloor !== undefined ? threshFloor : 0.002;
+// Fold env[i0, i1) at a period of `periodBins` envelope bins into nb phase
+// bins (mean energy per phase bin). Each envelope bin is split linearly
+// between its two nearest phase bins so sub-bin timing survives the fold.
+// Returns the overall mean.
+function tgFold(env, i0, i1, periodBins, nb, out, wt) {
+  out.fill(0); wt.fill(0);
+  const k = nb / periodBins;
+  for (let i = i0; i < i1; i++) {
+    const ph = (i + 0.5) * k - 0.5;
+    const fl = Math.floor(ph), fr = ph - fl;
+    let b = fl % nb; if (b < 0) b += nb;
+    const b2 = b + 1 === nb ? 0 : b + 1;
+    const v = env[i];
+    out[b] += v * (1 - fr); wt[b] += 1 - fr;
+    out[b2] += v * fr; wt[b2] += fr;
+  }
+  let tot = 0, n = 0;
+  for (let b = 0; b < nb; b++) { tot += out[b]; n += wt[b]; }
+  const mean = n ? tot / n : 0;
+  for (let b = 0; b < nb; b++) out[b] = wt[b] > 1e-9 ? out[b] / wt[b] : mean;
+  return mean;
+}
 
-  for (const mult of [3, 4, 5, 6, 7, 8, 10, 12]) {
-    const threshold = Math.max(floor, fileNoiseRMS * mult);
-    const det = detectTicksInSamples(samples, sr, threshold, minGap);
-    if (det.tickTimes.length < 4) continue;
+// How far the folded profile departs from flat (normalized variance)
+function tgSharpness(prof, mean, nb) {
+  if (!(mean > 0)) return 0;
+  let s = 0;
+  for (let b = 0; b < nb; b++) { const d = prof[b] - mean; s += d * d; }
+  return s / (mean * mean * nb);
+}
 
-    // Sub-sample refinement: energy centroid for consistent tick timing
-    for (let t = 0; t < det.tickTimes.length; t++) {
-      const c = Math.round(det.tickTimes[t] * sr);
-      const hw = 48; // half-window: 1ms at 48kHz
-      let swt = 0, sw = 0;
-      for (let j = Math.max(0, c - hw); j <= Math.min(samples.length - 1, c + hw); j++) {
-        const w = samples[j] * samples[j];
-        swt += j * w; sw += w;
+// Returns null (too short / silent), { ok: false, ... } (no periodic tick
+// signal found) or { ok: true, rate, rateErr, beatError, amplitude, ... }.
+// beatError / amplitude are null when they can't be measured reliably;
+// patternOk is false when the beat pattern doesn't look like a tick + tock
+// half a period apart (almost always a wrong beat-rate setting).
+function analyzeBeats(samples, sr, beatInterval, liftAngle) {
+  const dur = samples.length / sr;
+  if (dur < TG.MIN_DURATION) return null;
+  const P0 = 2 * beatInterval; // nominal full period: tick + tock
+
+  // --- Energy envelope of the tick band ---
+  const x = tgHighPass(samples, sr, Math.min(2000, sr / 6));
+  const bin = Math.max(1, Math.round(sr * TG.FINE_BIN_SEC));
+  const bd = bin / sr;
+  const n = Math.floor(x.length / bin);
+  const env = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0; const o = i * bin;
+    for (let j = 0; j < bin; j++) s += x[o + j] * x[o + j];
+    env[i] = s;
+  }
+
+  // Bumps, handling noise and speech carry thousands of ticks' worth of
+  // energy. Blank any period-long block that is far louder than typical,
+  // then clip what remains to a few times the usual per-beat peak.
+  const blk = Math.max(1, Math.round(P0 / bd)), nBlk = Math.floor(n / blk);
+  if (nBlk < 4) return null;
+  const blkMean = new Float64Array(nBlk), blkMax = new Float64Array(nBlk);
+  for (let k = 0; k < nBlk; k++) {
+    let s = 0, m = 0;
+    for (let i = k * blk; i < (k + 1) * blk; i++) { s += env[i]; if (env[i] > m) m = env[i]; }
+    blkMean[k] = s / blk; blkMax[k] = m;
+  }
+  const medMean = tgMedian(blkMean);
+  if (!(medMean > 0)) return null; // digital silence
+  const cap = 3 * tgMedian(blkMax);
+  for (let k = 0; k < nBlk; k++) {
+    const loud = blkMean[k] > 6 * medMean;
+    for (let i = k * blk; i < (k + 1) * blk; i++) {
+      if (loud) env[i] = medMean; else if (env[i] > cap) env[i] = cap;
+    }
+  }
+  for (let i = nBlk * blk; i < n; i++) if (env[i] > cap) env[i] = cap;
+
+  const cf = TG.COARSE_FACTOR, nc = Math.floor(n / cf), cbd = bd * cf;
+  const envC = new Float32Array(nc);
+  for (let i = 0; i < nc; i++) {
+    let s = 0; const o = i * cf;
+    for (let j = 0; j < cf; j++) s += env[o + j];
+    envC[i] = s;
+  }
+
+  // --- Coarse period search: fold at trial rates, keep the sharpest ---
+  // Long recordings are searched in up to six 20 s chunks (cost grows with
+  // the square of chunk length); the best chunk seeds the tracking below.
+  const chunkSec = dur <= 30 ? dur : 20;
+  const nChunks = dur <= 30 ? 1 : Math.min(6, Math.floor(dur / chunkSec));
+  const nbc = Math.max(8, Math.round(P0 / cbd));
+  const profC = new Float64Array(nbc), wtC = new Float64Array(nbc);
+  const step = 0.0005 / chunkSec * 86400; // 0.5 ms of drift across the chunk
+  let best = null;
+  for (let c = 0; c < nChunks; c++) {
+    const startSec = nChunks === 1 ? 0 : c * (dur - chunkSec) / (nChunks - 1);
+    const i0 = Math.floor(startSec / cbd), i1 = Math.min(nc, Math.floor((startSec + chunkSec) / cbd));
+    const scores = [];
+    let bs = -1, br = 0;
+    for (let r = -TG.MAX_RATE; r <= TG.MAX_RATE; r += step) {
+      const mean = tgFold(envC, i0, i1, P0 / (1 + r / 86400) / cbd, nbc, profC, wtC);
+      const s = tgSharpness(profC, mean, nbc);
+      scores.push(s);
+      if (s > bs) { bs = s; br = r; }
+    }
+    const med = tgMedian(scores);
+    const contrast = med > 0 ? bs / med : 0;
+    if (!best || contrast > best.contrast) best = { contrast, rate: br, startSec };
+  }
+  const fail = { ok: false, contrast: best.contrast, duration: dur };
+  if (best.contrast < TG.MIN_CONTRAST) return fail;
+
+  // --- Fine search on the full-resolution envelope ---
+  const nb = 2 * Math.max(8, Math.round(P0 / (2 * TG.PHASE_BIN_SEC)));
+  const prof = new Float64Array(nb), wt = new Float64Array(nb);
+  const f0 = Math.floor(best.startSec / bd), f1 = Math.min(n, Math.floor((best.startSec + chunkSec) / bd));
+  let r1 = best.rate, fs = -1;
+  for (let k = -15; k <= 15; k++) {
+    const r = best.rate + k * step / 10;
+    const mean = tgFold(env, f0, f1, P0 / (1 + r / 86400) / bd, nb, prof, wt);
+    const s = tgSharpness(prof, mean, nb);
+    if (s > fs) { fs = s; r1 = r; }
+  }
+  const P1 = P0 / (1 + r1 / 86400); // seconds
+  const P1bins = P1 / bd;
+  const wb = P1 / nb;               // phase-bin width, seconds
+
+  // Reference profile (zero-mean, unit norm)
+  const ref = new Float64Array(nb);
+  {
+    const mean = tgFold(env, f0, f1, P1bins, nb, prof, wt);
+    let ss = 0;
+    for (let b = 0; b < nb; b++) { ref[b] = prof[b] - mean; ss += ref[b] * ref[b]; }
+    const norm = Math.sqrt(ss) || 1;
+    for (let b = 0; b < nb; b++) ref[b] /= norm;
+  }
+
+  // --- Phase tracking: where does the beat pattern sit in each short segment? ---
+  const segSec = Math.min(2.5, Math.max(1, dur / 8));
+  const segN = Math.floor(segSec / bd), hopN = Math.floor(segN / 2);
+  const segStarts = [];
+  for (let i0 = 0; i0 + segN <= n; i0 += hopN) segStarts.push(i0);
+  const nSeg = segStarts.length;
+  const chunkCenter = (f0 + f1) / 2;
+  let startIdx = 0, bestDist = Infinity;
+  for (let i = 0; i < nSeg; i++) {
+    const d = Math.abs(segStarts[i] + segN / 2 - chunkCenter);
+    if (d < bestDist) { bestDist = d; startIdx = i; }
+  }
+  const hw = Math.round(0.002 / wb); // search ±2 ms around the predicted lag
+  const q = new Float64Array(nb);
+  const segs = new Array(nSeg).fill(null);
+  const trackOne = (i, center) => {
+    const mean = tgFold(env, segStarts[i], segStarts[i] + segN, P1bins, nb, prof, wt);
+    let ss = 0;
+    for (let b = 0; b < nb; b++) { q[b] = prof[b] - mean; ss += q[b] * q[b]; }
+    const norm = Math.sqrt(ss);
+    if (!(norm > 0)) return center;
+    const cc = [];
+    for (let l = center - hw - 1; l <= center + hw + 1; l++) {
+      let s = 0;
+      const sh = ((-l % nb) + nb) % nb; // q[b] against ref[b - l]
+      for (let b = 0; b < nb; b++) { let j = b + sh; if (j >= nb) j -= nb; s += q[b] * ref[j]; }
+      cc.push(s / norm);
+    }
+    let bi = 1;
+    for (let k = 2; k < cc.length - 1; k++) if (cc[k] > cc[bi]) bi = k;
+    const corr = cc[bi];
+    if (corr < TG.MIN_CORR) return center;
+    const a = cc[bi - 1], c2 = cc[bi + 1], den = a - 2 * corr + c2;
+    const frac = den < 0 ? 0.5 * (a - c2) / den : 0;
+    const lagBins = center - hw - 1 + bi + frac;
+    segs[i] = { t: (segStarts[i] + segN / 2) * bd, lag: lagBins * wb, lagBins, prof: Float32Array.from(prof) };
+    return Math.round(lagBins);
+  };
+  let center = trackOne(startIdx, 0);
+  const c0 = center;
+  for (let i = startIdx + 1; i < nSeg; i++) center = trackOne(i, center);
+  center = c0;
+  for (let i = startIdx - 1; i >= 0; i--) center = trackOne(i, center);
+
+  // --- Robust line fit of lag vs time: the slope is the period error ---
+  const pts = segs.filter(Boolean);
+  if (pts.length < 3) return fail;
+  const slopes = [];
+  const stride = Math.max(1, Math.floor(pts.length / 150));
+  for (let i = 0; i < pts.length; i += stride)
+    for (let j = i + stride; j < pts.length; j += stride)
+      slopes.push((pts[j].lag - pts[i].lag) / (pts[j].t - pts[i].t));
+  const ts = tgMedian(slopes);
+  const icpt = tgMedian(pts.map(p => p.lag - ts * p.t));
+  const resid = pts.map(p => p.lag - ts * p.t - icpt);
+  const mad = tgMedian(resid.map(Math.abs)) * 1.4826;
+  const tol = Math.max(0.00005, 3.5 * mad);
+  const inl = pts.filter((p, i) => Math.abs(resid[i]) <= tol);
+  const quality = inl.length / nSeg;
+  if (inl.length < 3 || quality < 0.4) return fail;
+  let st = 0, sl = 0;
+  for (const p of inl) { st += p.t; sl += p.lag; }
+  const mt = st / inl.length, ml = sl / inl.length;
+  let sxx = 0, sxy = 0;
+  for (const p of inl) { sxx += (p.t - mt) * (p.t - mt); sxy += (p.t - mt) * (p.lag - ml); }
+  if (!(sxx > 0)) return fail;
+  const slope = sxy / sxx;
+  let sse = 0;
+  for (const p of inl) { const e = p.lag - ml - slope * (p.t - mt); sse += e * e; }
+  // Segments overlap by half, so their errors are correlated (x sqrt 2), and
+  // timing can't be trusted below ~30 us however clean the fit looks.
+  const fitErr = Math.sqrt(2 * sse / (inl.length - 2) / sxx);
+  const span = inl[inl.length - 1].t - inl[0].t;
+  const slopeErr = Math.hypot(fitErr, 0.00003 / Math.max(span, 1));
+
+  const P = P1 / (1 - slope);
+  const rate = (P0 / P - 1) * 86400;
+  const rateErr = slopeErr * 86400;
+
+  // --- De-drifted average beat pattern from the inlier segments ---
+  const avg = new Float64Array(nb);
+  for (const p of inl) {
+    const sh = ((Math.round(p.lagBins) % nb) + nb) % nb;
+    for (let b = 0; b < nb; b++) { let j = b + sh; if (j >= nb) j -= nb; avg[b] += p.prof[j]; }
+  }
+  const base = tgMedian(avg);
+  const sigma = (tgMedian(Array.from(avg, v => Math.abs(v - base))) * 1.4826) || 1e-30;
+  const z = Array.from(avg, v => (v - base) / sigma);
+  const at = (j) => z[((j % nb) + nb) % nb];
+
+  let m1 = 0;
+  for (let b = 1; b < nb; b++) if (z[b] > z[m1]) m1 = b;
+  const half = nb / 2, eighth = Math.round(nb / 8);
+  const pre = eighth, post = Math.round(nb / 16);
+
+  // A real tick + tock shows two clusters half a period apart and nothing
+  // in between. Anything else means the beat-rate setting is wrong (other
+  // rates still fold coherently, just into a different number of clusters).
+  // The "in between" test uses the per-bin median across segments, so a
+  // one-off noise that landed in a single segment can't pose as a cluster.
+  const z1max = z[m1];
+  let z2max = 0;
+  for (let j = half - eighth; j <= half + eighth; j++) z2max = Math.max(z2max, at(m1 + j));
+  const med = new Float64Array(nb), col = new Float64Array(inl.length);
+  const shifts = inl.map(p => ((Math.round(p.lagBins) % nb) + nb) % nb);
+  for (let b = 0; b < nb; b++) {
+    for (let s = 0; s < inl.length; s++) col[s] = inl[s].prof[(b + shifts[s]) % nb];
+    med[b] = tgMedian(col);
+  }
+  const mBase = tgMedian(med);
+  const mSigma = (tgMedian(Array.from(med, v => Math.abs(v - mBase))) * 1.4826) || 1e-30;
+  let mIn = 0, mOut = 0;
+  for (let j = -half + 1; j <= half; j++) {
+    const v = (med[(((m1 + j) % nb) + nb) % nb] - mBase) / mSigma, a = Math.abs(j);
+    if (a <= eighth) { if (v > mIn) mIn = v; }
+    else if (a < half - eighth && v > mOut) mOut = v;
+  }
+  const patternOk = z2max >= 5 && mOut < Math.max(8, 0.1 * mIn);
+
+  // Beat error: offset between the tick and tock patterns. Compare the log-
+  // compressed patterns so all three escapement sounds count, not only the
+  // loudest (which can be a different sound on tick and tock).
+  let beatError = null, tockLag = 0;
+  if (patternOk) {
+    const comp = (v) => v > 3 ? Math.log1p(v - 3) : 0;
+    const maxL = Math.min(eighth - 2, Math.round(0.006 / wb));
+    const xc = [];
+    for (let l = -maxL - 1; l <= maxL + 1; l++) {
+      let s = 0;
+      for (let j = -pre; j <= post; j++) s += comp(at(m1 + j)) * comp(at(m1 + j + half + l));
+      xc.push(s);
+    }
+    let xb = 1;
+    for (let k = 2; k < xc.length - 1; k++) if (xc[k] > xc[xb]) xb = k;
+    if (xc[xb] > 0) {
+      const a = xc[xb - 1], c2 = xc[xb + 1], den = a - 2 * xc[xb] + c2;
+      const frac = den < 0 ? 0.5 * (a - c2) / den : 0;
+      tockLag = xb - maxL - 1 + frac;
+      beatError = Math.abs(tockLag) * wb * 1000;
+    }
+  }
+
+  // Amplitude: the time from the first sound (unlocking) to the last
+  // (drop/lock) is the time the balance takes to sweep the lift angle.
+  let amplitude = null;
+  if (beatError !== null && liftAngle > 0) {
+    const lr = Math.round(tockLag);
+    let t2max = 0;
+    for (let j = -pre; j <= post; j++) t2max = Math.max(t2max, at(m1 + j + half + lr));
+    const lin = [], nrm = [];
+    for (let j = -pre; j <= post; j++) {
+      const a = at(m1 + j), b = at(m1 + j + half + lr);
+      lin.push(a + b);
+      nrm.push(a / z1max + b / t2max);
+    }
+    let jd = 0, linMax = 0;
+    for (let j = 0; j < nrm.length; j++) { if (nrm[j] > nrm[jd]) jd = j; if (lin[j] > linMax) linMax = lin[j]; }
+    let jo = jd; // walk back to the half-height point of the drop's leading edge
+    while (jo > 0 && nrm[jo - 1] >= 0.5 * nrm[jd]) jo--;
+    const thr = Math.max(8.5, 0.01 * linMax);
+    let jf = -1;
+    for (let j = 0; j < jo; j++) if (lin[j] >= thr && lin[j + 1] >= thr) { jf = j; break; }
+    // Only trust it when the faint first sound would clear the noise
+    if (jf >= 0 && linMax >= 250) {
+      const amp = liftAngle / (2 * Math.sin(Math.PI * (jo - jf) * wb / P));
+      if (amp >= 120 && amp <= 360) amplitude = amp;
+    }
+  }
+
+  // --- Per-beat trace: locate every tick / tock with its own template ---
+  const trace = [];
+  {
+    const L = pre + post + 1, ratio = wb / bd;
+    const tm = [new Float32Array(L), new Float32Array(L)];
+    const off = [m1 - pre, m1 - pre + half + tockLag];
+    for (let j = 0; j < L; j++) {
+      tm[0][j] = Math.max(0, at(m1 - pre + j));
+      tm[1][j] = patternOk ? Math.max(0, at(m1 - pre + half + Math.round(tockLag) + j)) : 0;
+    }
+    const maxLag = Math.round(0.0015 / bd);
+    const cand = [];
+    const lagAt = (t) => ml + slope * (t - mt);
+    for (let K = 0; K * P1 < dur; K++) {
+      for (let c = 0; c < (patternOk ? 2 : 1); c++) {
+        let t0 = K * P1 + (off[c] + 0.5) * wb;
+        t0 += lagAt(t0);
+        const i0 = Math.round(t0 / bd);
+        if (i0 - maxLag - 1 < 0 || i0 + maxLag + 1 + Math.ceil(L * ratio) + 1 >= n) continue;
+        const sc = [];
+        for (let l = -maxLag - 1; l <= maxLag + 1; l++) {
+          let s = 0;
+          for (let j = 0; j < L; j++) { const e = i0 + l + Math.floor(j * ratio); s += tm[c][j] * (env[e] + env[e + 1]); }
+          sc.push(s);
+        }
+        let b = 1;
+        for (let k = 2; k < sc.length - 1; k++) if (sc[k] > sc[b]) b = k;
+        const den = sc[b - 1] - 2 * sc[b] + sc[b + 1];
+        const frac = den < 0 ? 0.5 * (sc[b - 1] - sc[b + 1]) / den : 0;
+        // time of the cluster's main peak for this beat, and which beat it is
+        cand.push({ t: (i0 + b - maxLag - 1 + frac) * bd + pre * wb, beat: 2 * K + c, tock: c === 1, score: sc[b] });
       }
-      if (sw > 0) det.tickTimes[t] = swt / sw / sr;
     }
-
-    const intervals = [];
-    for (let i = 1; i < det.tickTimes.length; i++)
-      intervals.push(det.tickTimes[i] - det.tickTimes[i - 1]);
-
-    for (let n = 1; n <= 3; n++) {
-      const target = expectedInterval * n;
-
-      // Iterative median refinement: 3 passes narrowing the window
-      let center = target;
-      let window = 0.003; // ±3ms
-      let clean = [];
-
-      for (let pass = 0; pass < 3; pass++) {
-        clean = intervals.filter(v => Math.abs(v - center) <= window);
-        if (clean.length < 5) break;
-        clean.sort((a, b) => a - b);
-        const mid = Math.floor(clean.length / 2);
-        center = clean.length % 2 === 0 ? (clean[mid - 1] + clean[mid]) / 2 : clean[mid];
-        window = Math.max(0.0005, window * 0.5); // halve window each pass
-      }
-
-      if (clean.length < 5) continue;
-
-      const perBeat = center / n;
-      const rate = (expectedInterval / perBeat - 1) * 86400;
-      const pct = clean.length / intervals.length;
-      detections.push({ mult, n, clean: clean.length, total: intervals.length, pct, rate, det });
-    }
+    const medScore = tgMedian(cand.map(p => p.score));
+    for (const p of cand) if (p.score >= 0.4 * medScore) trace.push({ t: p.t, beat: p.beat, tock: p.tock });
+    trace.sort((a, b) => a.t - b.t);
   }
-
-  if (detections.length === 0) return { result: null, debug: 'no valid detections' };
-
-  // Group by N, prefer lowest N with enough high-quality data
-  const byN = {};
-  for (const d of detections) {
-    if (!byN[d.n]) byN[d.n] = [];
-    byN[d.n].push(d);
-  }
-
-  let useN = null;
-  for (const n of [1, 2, 3]) {
-    if (byN[n] && byN[n].length >= 3) { useN = n; break; }
-  }
-  // If N=1 was selected but all detections have low clean%, prefer N=2 if available
-  if (useN === 1 && byN[1]) {
-    const bestPct = Math.max(...byN[1].map(d => d.pct));
-    if (bestPct < 0.4 && byN[2] && byN[2].length >= 2) useN = 2;
-  }
-  if (useN === null) {
-    // Fallback: prefer N with best max clean%
-    let bestPct = 0;
-    for (const n of Object.keys(byN)) {
-      const maxPct = Math.max(...byN[n].map(d => d.pct));
-      if (maxPct > bestPct) { bestPct = maxPct; useN = parseInt(n); }
-    }
-  }
-
-  const allForN = byN[useN];
-  // Weighted median: sort by rate, accumulate clean% weights, pick rate at half-weight
-  const sorted = allForN.slice().sort((a, b) => a.rate - b.rate);
-  const totalWeight = sorted.reduce((s, d) => s + d.pct, 0);
-  let cumWeight = 0;
-  let medianRate = sorted[0].rate;
-  for (const d of sorted) {
-    cumWeight += d.pct;
-    if (cumWeight >= totalWeight / 2) { medianRate = d.rate; break; }
-  }
-
-  // Find detection closest to median rate
-  let bestDet = allForN[0];
-  let bestDist = Infinity;
-  for (const d of allForN) {
-    const dist = Math.abs(d.rate - medianRate);
-    if (dist < bestDist) { bestDist = dist; bestDet = d; }
-  }
-
-  // Beat error: measure tick-tock asymmetry from consecutive interval pairs
-  let beatError = 0;
-  const tt = bestDet.det.tickTimes;
-  const target = expectedInterval * bestDet.n;
-  const pairs = [];
-  for (let i = 2; i < tt.length; i++) {
-    const a = tt[i - 1] - tt[i - 2];
-    const b = tt[i] - tt[i - 1];
-    if (Math.abs(a - target) < 0.003 && Math.abs(b - target) < 0.003) {
-      pairs.push(Math.abs(a - b));
-    }
-  }
-  if (pairs.length >= 2) {
-    pairs.sort((a, b) => a - b);
-    beatError = pairs[Math.floor(pairs.length / 2)] * 1000 / bestDet.n;
-  }
-
-  const tickTimes = bestDet.det.tickTimes;
-  const tickAmps = bestDet.det.tickAmps;
-  const avgAmp = tickAmps.reduce((a, b) => a + b, 0) / tickAmps.length;
-  const ampDeg = Math.min(330, Math.max(150, 150 + avgAmp * 1800));
-  const duration = tickTimes[tickTimes.length - 1] - tickTimes[0];
-  const avgInterval = expectedInterval / (1 + medianRate / 86400);
-
-  // Hodges-Lehmann rate: computed once on the best detection's intervals.
-  // Unbiased for bimodal tick-tock distributions (selective beat dropout).
-  // Used by windowed analysis; single-pass uses medianRate instead.
-  let hlRate = medianRate; // fallback
-  const hlIntervals = [];
-  for (let i = 1; i < tickTimes.length; i++)
-    hlIntervals.push(tickTimes[i] - tickTimes[i - 1]);
-  const hlTarget = expectedInterval * bestDet.n;
-  let hlCenter = hlTarget;
-  let hlWindow = 0.003;
-  for (let pass = 0; pass < 3; pass++) {
-    const hlClean = hlIntervals.filter(v => Math.abs(v - hlCenter) <= hlWindow);
-    if (hlClean.length < 5) break;
-    hlClean.sort((a, b) => a - b);
-    const pw = [];
-    for (let i = 0; i < hlClean.length; i++)
-      for (let j = i; j < hlClean.length; j++)
-        pw.push((hlClean[i] + hlClean[j]) / 2);
-    pw.sort((a, b) => a - b);
-    hlCenter = pw[Math.floor(pw.length / 2)];
-    hlWindow = Math.max(0.001, hlWindow * 0.5);
-  }
-  hlRate = (expectedInterval / (hlCenter / bestDet.n) - 1) * 86400;
-
-  const rateList = allForN.map(d => `${d.mult}x:${d.rate > 0 ? '+' : ''}${d.rate.toFixed(1)}(${(d.pct*100).toFixed(0)}%)`).join(' ');
-  const allNs = Object.keys(byN).map(n => `N=${n}(${byN[n].length})`).join(' ');
 
   return {
-    result: {
-      rate: medianRate, hlRate, beatError, ampDeg, avgInterval,
-      tickMultiple: bestDet.n, tickCount: tickTimes.length,
-      cleanCount: bestDet.clean, duration, tickTimes
-    },
-    debug: `N=${useN} (${allNs}), [${rateList}]`
+    ok: true, rate, rateErr, beatError, amplitude, patternOk,
+    avgInterval: P / 2, beats: Math.round(quality * dur / (P / 2)),
+    duration: dur, contrast: best.contrast, quality, trace
   };
 }
 
-// --- Windowed file analysis: split longer recordings into overlapping windows ---
-// Each window gets its own local noise floor, analyzed independently, results combined.
-function analyzeFileWindowed(samples, sr, expectedInterval, threshFloor) {
-  const duration = samples.length / sr;
-  const winSec = 10;   // 10-second analysis windows
-  const stepSec = 5;   // 5-second step (50% overlap)
-
-  // Short recordings: single-window analysis (avoids splitting into noisy sub-windows)
-  if (duration < 20) {
-    const fileAbs = [];
-    for (let i = 0; i < samples.length; i += 4) fileAbs.push(Math.abs(samples[i]));
-    fileAbs.sort((a, b) => a - b);
-    const fileNoiseRMS = fileAbs[Math.floor(fileAbs.length * 0.5)] * 1.48;
-    return analyzeFile(samples, sr, fileNoiseRMS, expectedInterval, threshFloor);
+// When the beat pattern doesn't fit the selected rate, see whether exactly
+// one of the other standard rates does.
+function suggestBph(samples, sr, currentBph) {
+  const hits = [];
+  for (const bph of TG.BPH_OPTIONS) {
+    if (bph === currentBph) continue;
+    const r = analyzeBeats(samples, sr, 3600 / bph, 0);
+    if (r && r.ok && r.patternOk) hits.push(bph);
   }
-
-  // Build windows
-  const windows = [];
-  for (let startSec = 0; startSec + winSec <= duration; startSec += stepSec) {
-    const s0 = Math.floor(startSec * sr);
-    const s1 = Math.min(Math.floor((startSec + winSec) * sr), samples.length);
-    const winSamples = samples.subarray(s0, s1);
-
-    // Local noise floor for this window
-    const winAbs = [];
-    for (let i = 0; i < winSamples.length; i += 4) winAbs.push(Math.abs(winSamples[i]));
-    winAbs.sort((a, b) => a - b);
-    const winNoise = winAbs[Math.floor(winAbs.length * 0.5)] * 1.48;
-
-    const result = analyzeFile(winSamples, sr, winNoise, expectedInterval, threshFloor);
-    if (result.result) {
-      windows.push({
-        rate: result.result.hlRate,  // HL rate: unbiased for tick-tock dropout
-        beatError: result.result.beatError,
-        tickCount: result.result.tickCount,
-        cleanCount: result.result.cleanCount,
-        tickMultiple: result.result.tickMultiple,
-        duration: result.result.duration,
-        ampDeg: result.result.ampDeg,
-        avgInterval: result.result.avgInterval,
-        quality: result.result.cleanCount / Math.max(1, result.result.tickCount - 1),
-        startSec,
-        times: result.result.tickTimes,
-        debug: result.debug
-      });
-    }
-  }
-
-  if (windows.length === 0) {
-    // Fallback to global analysis
-    const fileAbs = [];
-    for (let i = 0; i < samples.length; i += 4) fileAbs.push(Math.abs(samples[i]));
-    fileAbs.sort((a, b) => a - b);
-    const fileNoiseRMS = fileAbs[Math.floor(fileAbs.length * 0.5)] * 1.48;
-    return analyzeFile(samples, sr, fileNoiseRMS, expectedInterval, threshFloor);
-  }
-
-  // Quality gate: discard windows with low clean% (unreliable HL estimates)
-  const qualityMin = 0.50;
-  let qualified = windows.filter(w => w.quality >= qualityMin);
-  if (qualified.length < 2) {
-    // Signal too weak for windowed HL — fall back to single-pass median on
-    // first 15s (best SNR, proven reliable for short recordings)
-    const useSec = Math.min(duration, 15);
-    const useSamples = samples.subarray(0, Math.floor(useSec * sr));
-    const fbAbs = [];
-    for (let i = 0; i < useSamples.length; i += 4) fbAbs.push(Math.abs(useSamples[i]));
-    fbAbs.sort((a, b) => a - b);
-    const fbNoise = fbAbs[Math.floor(fbAbs.length * 0.5)] * 1.48;
-    return analyzeFile(useSamples, sr, fbNoise, expectedInterval, threshFloor);
-  }
-
-  // Outlier rejection: compute median rate, then MAD, discard windows > 3 MAD away
-  let kept = qualified;
-  if (qualified.length >= 3) {
-    const rates = qualified.map(w => w.rate).sort((a, b) => a - b);
-    const rawMedian = rates[Math.floor(rates.length / 2)];
-    const absDevs = rates.map(r => Math.abs(r - rawMedian)).sort((a, b) => a - b);
-    const mad = absDevs[Math.floor(absDevs.length / 2)] * 1.48; // scale to match std dev
-    const cutoff = Math.max(30, mad * 3); // at least ±30 s/d tolerance
-    kept = qualified.filter(w => Math.abs(w.rate - rawMedian) <= cutoff);
-    if (kept.length < 2) kept = qualified; // don't filter too aggressively
-  }
-
-  // Weighted mean of surviving window rates (weight = quality² * tickCount)
-  // Mean is better than median for combining few high-quality windows,
-  // and quality² strongly favors the most reliable windows.
-  let totalWeight = 0, weightedSum = 0;
-  for (const w of kept) {
-    const wt = w.quality * w.quality * w.tickCount;
-    weightedSum += w.rate * wt;
-    totalWeight += wt;
-  }
-  let medianRate = weightedSum / totalWeight;
-
-  // Pick the window closest to the median rate for beat error / details
-  let bestWin = kept[0];
-  let bestDist = Infinity;
-  for (const w of kept) {
-    const dist = Math.abs(w.rate - medianRate);
-    if (dist < bestDist) { bestDist = dist; bestWin = w; }
-  }
-
-  // Aggregate stats from kept windows only. Overlapping windows see the same
-  // physical ticks twice — merge timestamps and dedup so tickCount is honest.
-  const mergedTimes = [];
-  for (const w of kept)
-    for (const t of w.times) mergedTimes.push(w.startSec + t);
-  mergedTimes.sort((a, b) => a - b);
-  // Duplicates from adjacent windows land within ~1ms; distinct ticks are
-  // >= 0.7x expectedInterval apart (detection minGap), so 0.35x splits them.
-  const dedupTol = expectedInterval * 0.35;
-  let totalTicks = 0, lastT = -Infinity;
-  for (const t of mergedTimes) {
-    if (t - lastT > dedupTol) { totalTicks++; lastT = t; }
-  }
-  // Scale clean-interval count to the deduped tick count, preserving the
-  // kept windows' overall clean ratio (each window has tickCount-1 intervals).
-  const overlapClean = kept.reduce((s, w) => s + w.cleanCount, 0);
-  const overlapIntervals = kept.reduce((s, w) => s + Math.max(0, w.tickCount - 1), 0);
-  const cleanRatio = overlapIntervals > 0 ? overlapClean / overlapIntervals : 0;
-  const totalClean = Math.min(Math.max(0, totalTicks - 1), Math.round(cleanRatio * Math.max(0, totalTicks - 1)));
-
-  const winRates = windows.map((w, i) => {
-    const qualFail = w.quality < qualityMin;
-    const rejected = !kept.includes(w);
-    const flag = qualFail ? 'q' : rejected ? '!' : '';
-    return `w${i+1}:${w.rate > 0 ? '+' : ''}${w.rate.toFixed(1)}(${(w.quality*100).toFixed(0)}%)${flag}`;
-  }).join(' ');
-
-  // Derive avgInterval consistent with final rate (not from one window's local fit)
-  const consistentAvgInterval = expectedInterval / (1 + medianRate / 86400);
-
-  return {
-    result: {
-      rate: medianRate,
-      beatError: bestWin.beatError,
-      ampDeg: bestWin.ampDeg,
-      avgInterval: consistentAvgInterval,
-      tickMultiple: bestWin.tickMultiple,
-      tickCount: totalTicks,
-      cleanCount: totalClean,
-      duration: duration
-    },
-    debug: `${kept.length}/${windows.length} windows, [${winRates}]`
-  };
-}
-
-// --- Core analysis: iterative median + Hodges-Lehmann ---
-// overrideN: if provided, use this N instead of auto-detecting
-function analyzeTickData(tickTimes, tickAmps, expectedInterval, overrideN) {
-  if (tickTimes.length < 4) return null;
-
-  // Amplitude filter: reject detections with amplitude < 0.4x median.
-  // Real ticks within a recording have similar amplitude; weak detections
-  // are usually noise spikes that crossed threshold but aren't real ticks.
-  if (tickAmps && tickAmps.length === tickTimes.length && tickAmps.length >= 8) {
-    const sortedAmps = tickAmps.slice().sort((a, b) => a - b);
-    const medAmp = sortedAmps[Math.floor(sortedAmps.length / 2)];
-    const ampFloor = medAmp * 0.4;
-    const filteredTimes = [];
-    const filteredAmps = [];
-    for (let i = 0; i < tickTimes.length; i++) {
-      if (tickAmps[i] >= ampFloor) {
-        filteredTimes.push(tickTimes[i]);
-        filteredAmps.push(tickAmps[i]);
-      }
-    }
-    // Only use the filter if it kept enough ticks
-    if (filteredTimes.length >= 4 && filteredTimes.length >= tickTimes.length * 0.5) {
-      tickTimes = filteredTimes;
-      tickAmps = filteredAmps;
-    }
-  }
-
-  // Compute all consecutive intervals
-  const intervals = [];
-  for (let i = 1; i < tickTimes.length; i++) {
-    intervals.push(tickTimes[i] - tickTimes[i - 1]);
-  }
-
-  // Find the best N (1=every tick, 2=every other, etc.)
-  let bestN = overrideN || 1;
-  if (!overrideN) {
-    let bestCount = 0;
-    for (let n = 1; n <= 4; n++) {
-      const target = expectedInterval * n;
-      let count = 0;
-      for (const v of intervals) {
-        if (Math.abs(v - target) < 0.003) count++;
-      }
-      if (count > bestCount) { bestCount = count; bestN = n; }
-    }
-  }
-
-  // Iterative median refinement: 2 passes with wider floor for live mic jitter
-  // Live mic timestamps have more jitter than offline centroid-refined file timestamps
-  const target = expectedInterval * bestN;
-  let center = target;
-  let window = 0.004; // ±4ms initial
-  let clean = [];
-  for (let pass = 0; pass < 2; pass++) {
-    clean = intervals.filter(v => Math.abs(v - center) <= window);
-    if (clean.length < 3) break;
-    clean.sort((a, b) => a - b);
-    const mid = Math.floor(clean.length / 2);
-    center = clean.length % 2 === 0 ? (clean[mid - 1] + clean[mid]) / 2 : clean[mid];
-    window = Math.max(0.002, window * 0.5); // floor at ±2ms (vs ±0.5ms for files)
-  }
-  if (clean.length < 2) return null;
-
-  // Hodges-Lehmann estimator on the refined clean set for tick-tock bias correction
-  let hlCenter = center;
-  if (clean.length >= 5 && clean.length <= 500) {
-    const pw = [];
-    for (let i = 0; i < clean.length; i++)
-      for (let j = i; j < clean.length; j++)
-        pw.push((clean[i] + clean[j]) / 2);
-    pw.sort((a, b) => a - b);
-    hlCenter = pw[Math.floor(pw.length / 2)];
-  }
-
-  // Rate: compare per-beat interval to expected
-  const avgInterval = hlCenter / bestN;
-  const ratio = expectedInterval / avgInterval;
-  const rate = (ratio - 1) * 86400;
-
-  // Beat error: measure tick-tock asymmetry from consecutive interval pairs
-  let beatError = 0;
-  const pairs = [];
-  for (let i = 2; i < tickTimes.length; i++) {
-    const a = tickTimes[i - 1] - tickTimes[i - 2];
-    const b = tickTimes[i] - tickTimes[i - 1];
-    if (Math.abs(a - target) < 0.003 && Math.abs(b - target) < 0.003) {
-      pairs.push(Math.abs(a - b));
-    }
-  }
-  if (pairs.length >= 2) {
-    pairs.sort((a, b) => a - b);
-    beatError = pairs[Math.floor(pairs.length / 2)] * 1000 / bestN;
-  }
-
-  const avgAmp = tickAmps.reduce((a, b) => a + b, 0) / tickAmps.length;
-  const ampDeg = Math.min(330, Math.max(150, 150 + avgAmp * 1800));
-  const duration = tickTimes[tickTimes.length - 1] - tickTimes[0];
-
-  return {
-    rate, beatError, ampDeg, avgInterval, tickMultiple: bestN,
-    tickCount: tickTimes.length, cleanCount: clean.length, duration
-  };
+  return hits.length === 1 ? hits[0] : null;
 }
 
 // --- Screen wake lock ---
@@ -1212,12 +1088,6 @@ async function startMic() {
   if (isStartingMic) return; // guard against double-click during async startup
   isStartingMic = true;
   micBtn.textContent = 'Starting...';
-  // Fresh session: clear tick state so previous session's timestamps don't
-  // suppress new detections (new AudioContext resets sample clock to 0).
-  ticks = [];
-  tickAmplitudes = [];
-  lastTickTime = 0;
-  cooldownUntil = 0;
   try {
     const ACtx = window.AudioContext || window.webkitAudioContext;
     audioCtx = new ACtx();
@@ -1239,60 +1109,33 @@ async function startMic() {
     sourceNode.connect(filterNode);
     filterNode.connect(analyserNode);
 
-    // ScriptProcessorNode receives biquad-filtered audio (2-pole HP at 300Hz).
-    // File uploads use a simpler 1-pole IIR HP — similar but not identical response.
-    const SCRIPT_BUF = 4096;
-    const CARRY_SIZE = 256;
-    scriptNode = audioCtx.createScriptProcessor(SCRIPT_BUF, 1, 1);
-    totalSamples = 0;
-    carryBuf = null;
+    // ScriptProcessorNode taps the filtered audio into a rolling buffer; the
+    // analysis runs on that buffer, exactly as it does on an uploaded file.
+    scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
     recordedAudio = [];
+    recordedLen = 0;
     recordedSampleRate = audioCtx.sampleRate;
+    liveTrace = null;
+    liveBphHint = null;
     scriptNode.onaudioprocess = function(e) {
       // A queued callback can fire after stopMic() nulls audioCtx — bail out
       if (!isRecording) return;
-      const input = e.inputBuffer.getChannelData(0);
-      const sr = recordedSampleRate;
-
-      // Buffer biquad-filtered audio for file-style analysis (cap at ~120s)
-      const maxSamples = sr * 120;
-      const currentSize = recordedAudio.reduce((s, c) => s + c.length, 0);
-      const inputCopy = new Float32Array(input);
-      if (currentSize < maxSamples) {
-        recordedAudio.push(inputCopy);
-      } else {
-        recordedAudio.shift();
-        recordedAudio.push(inputCopy);
+      const chunk = new Float32Array(e.inputBuffer.getChannelData(0));
+      recordedAudio.push(chunk);
+      recordedLen += chunk.length;
+      const maxSamples = recordedSampleRate * LIVE_WINDOW_SEC;
+      while (recordedLen - recordedAudio[0].length >= maxSamples) {
+        recordedLen -= recordedAudio.shift().length;
       }
-
-      // Prepend carry-over so ticks near buffer boundaries get full lookahead/centroid
-      let combined, carryLen;
-      if (carryBuf) {
-        combined = new Float32Array(carryBuf.length + input.length);
-        combined.set(carryBuf);
-        combined.set(input, carryBuf.length);
-        carryLen = carryBuf.length;
-      } else {
-        combined = new Float32Array(input);
-        carryLen = 0;
-      }
-
-      const baseSample = totalSamples - carryLen;
-      detectTicksFromScript(combined, sr, baseSample, combined.length - CARRY_SIZE);
-      totalSamples += input.length;
-
-      carryBuf = new Float32Array(CARRY_SIZE);
-      carryBuf.set(combined.subarray(combined.length - CARRY_SIZE));
     };
     silentGain = audioCtx.createGain();
     silentGain.gain.value = 0;
-    filterNode.connect(scriptNode); // biquad-filtered → script
+    filterNode.connect(scriptNode);
     scriptNode.connect(silentGain);
     silentGain.connect(audioCtx.destination);
 
     timeDomainBuf = null;
     lastResultsUpdate = 0;
-    noiseRMS = 0;
     isRecording = true;
     isStartingMic = false;
     micBtn.textContent = 'Stop';
@@ -1341,8 +1184,22 @@ function stopMic(skipAnalysis) {
   releaseWakeLock();
   if (!skipAnalysis) { // Reset discards everything — skip the final heavy pass
     updateLiveResults();
-    drawDots();
+    drawTrace();
   }
+}
+
+// --- Shared result formatting ---
+function fmtRate(rate) {
+  return (rate >= 0 ? '+' : '') + rate.toFixed(1);
+}
+function rateClass(rate) {
+  const a = Math.abs(rate);
+  return a < 5 ? 'good' : a < 15 ? 'warn' : 'bad';
+}
+function bphMismatchText(bph, suggestion) {
+  return `Beat pattern doesn't match ${bph.toLocaleString()} BPH` +
+    (suggestion ? ` — looks like ${suggestion.toLocaleString()} BPH` : '') +
+    '. The rate is still valid; beat error and amplitude need the right beat rate.';
 }
 
 // --- Live mic results ---
@@ -1350,48 +1207,42 @@ function updateLiveResults() {
   $('timingCard').style.display = '';
   $('resultsCard').style.display = '';
 
-  // Use file-style analysis on buffered audio — far more accurate than
-  // interval-based analysis on noisy live mic detections.
-  // Cap analysis window at 30s to keep main thread responsive.
-  let result = null;
-  let usedFileAnalysis = false;
-  if (recordedAudio.length > 0 && recordedSampleRate > 0) {
-    const ANALYSIS_WINDOW_SEC = 30;
-    const maxSamples = recordedSampleRate * ANALYSIS_WINDOW_SEC;
-    let totalLen = recordedAudio.reduce((s, c) => s + c.length, 0);
-
-    if (totalLen >= recordedSampleRate * 5) { // need at least 5s of audio
-      // Take last ANALYSIS_WINDOW_SEC of samples
-      const useLen = Math.min(totalLen, maxSamples);
-      const merged = new Float32Array(useLen);
-      let written = 0;
-      let skipFromHead = totalLen - useLen;
-      for (const c of recordedAudio) {
-        if (skipFromHead >= c.length) { skipFromHead -= c.length; continue; }
-        const src = skipFromHead > 0 ? c.subarray(skipFromHead) : c;
-        skipFromHead = 0;
-        merged.set(src, written);
-        written += src.length;
-      }
-
-      const expectedInterval = getExpectedInterval();
-      const analysis = analyzeFileWindowed(merged, recordedSampleRate, expectedInterval, 0.0002);
-      if (analysis && analysis.result) {
-        result = analysis.result;
-        usedFileAnalysis = true;
-      }
+  const bph = parseInt(bphSelect.value);
+  let result = null, merged = null;
+  if (recordedSampleRate > 0 && recordedLen >= recordedSampleRate * LIVE_MIN_SEC) {
+    // Most recent LIVE_WINDOW_SEC of audio as one contiguous buffer
+    const useLen = Math.min(recordedLen, recordedSampleRate * LIVE_WINDOW_SEC);
+    merged = new Float32Array(useLen);
+    let written = 0;
+    let skipFromHead = recordedLen - useLen;
+    for (const c of recordedAudio) {
+      if (skipFromHead >= c.length) { skipFromHead -= c.length; continue; }
+      const src = skipFromHead > 0 ? c.subarray(skipFromHead) : c;
+      skipFromHead = 0;
+      merged.set(src, written);
+      written += src.length;
     }
+    result = analyzeBeats(merged, recordedSampleRate, getExpectedInterval(), getLiftAngle());
   }
 
-  // Fallback to detection-based analysis if buffered audio not ready
-  if (!result && ticks.length >= 4) {
-    result = analyzeTickData(ticks, tickAmplitudes, getExpectedInterval());
-  }
-
-  if (!result) {
-    const bufSec = recordedAudio.reduce((s, c) => s + c.length, 0) / Math.max(1, recordedSampleRate);
-    if (isRecording) {
-      $('statusText').textContent = `Buffering audio... (${bufSec.toFixed(1)}s / 5s minimum)`;
+  const copyBtn = $('copyLiveBtn');
+  if (!result || !result.ok) {
+    liveTrace = null;
+    $('rateVal').textContent = '--';
+    $('rateVal').className = 'result-value';
+    $('beatErrVal').textContent = '--';
+    $('beatErrVal').className = 'result-value';
+    $('ampVal').textContent = '--';
+    $('tickCountVal').textContent = '--';
+    $('avgIntVal').textContent = '--';
+    copyBtn.style.display = 'none';
+    copyBtn._liveResult = null;
+    if (result) {
+      $('statusText').textContent = 'No clear tick signal — check the beat rate setting and hold the caseback against the mic.';
+      $('statusText').className = 'status';
+    } else if (isRecording) {
+      const bufSec = recordedLen / Math.max(1, recordedSampleRate);
+      $('statusText').textContent = `Buffering audio... (${bufSec.toFixed(1)}s / ${LIVE_MIN_SEC}s minimum)`;
       $('statusText').className = 'status active';
     } else {
       $('statusText').textContent = 'Not enough audio captured for analysis.';
@@ -1400,57 +1251,47 @@ function updateLiveResults() {
     return;
   }
 
-  const { rate, beatError, ampDeg, avgInterval, tickMultiple, cleanCount, tickCount, duration } = result;
-  const absRate = Math.abs(rate);
-  const sign = rate >= 0 ? '+' : '';
-  const cleanPct = tickCount > 1 ? cleanCount / (tickCount - 1) : 0;
-  // Quality tiers — hide unreliable results entirely
-  // Below 30% clean OR fewer than 20 clean intervals → result is noise
-  const unreliable = cleanPct < 0.30 || cleanCount < 20 || absRate > 200;
-  const lowQuality = cleanPct < 0.50;
+  const { rate, rateErr, beatError, amplitude, avgInterval, beats, duration, patternOk } = result;
+  liveTrace = { points: result.trace, interval: getExpectedInterval() };
 
-  if (unreliable) {
-    $('rateVal').textContent = '---';
-    $('rateVal').className = 'result-value';
-  } else {
-    $('rateVal').textContent = `${sign}${rate.toFixed(1)}`;
-    let cls = absRate < 5 ? 'good' : absRate < 15 ? 'warn' : 'bad';
-    $('rateVal').className = 'result-value ' + cls + (lowQuality ? ' low-conf' : '');
-  }
-  if (tickMultiple > 1) {
-    $('beatErrVal').textContent = 'N/A';
+  $('rateVal').textContent = fmtRate(rate);
+  $('rateVal').className = 'result-value ' + rateClass(rate) + (rateErr > 2 ? ' low-conf' : '');
+  if (beatError === null) {
+    $('beatErrVal').textContent = '--';
     $('beatErrVal').className = 'result-value';
   } else {
     $('beatErrVal').textContent = beatError.toFixed(2);
-    $('beatErrVal').className = 'result-value ' + (beatError < 0.5 ? 'good' : beatError < 1.5 ? 'warn' : 'bad');
+    $('beatErrVal').className = 'result-value ' + (beatError < 0.5 ? 'good' : beatError < 1.0 ? 'warn' : 'bad');
   }
-  $('ampVal').textContent = Math.round(ampDeg);
-  $('tickCountVal').textContent = tickCount;
+  $('ampVal').textContent = amplitude === null ? '--' : Math.round(amplitude);
+  $('tickCountVal').textContent = beats;
   $('avgIntVal').textContent = (avgInterval * 1000).toFixed(3);
 
-  let statusMsg = `${tickCount} ticks over ${duration.toFixed(1)}s`;
-  if (tickMultiple > 1) statusMsg += ` N=${tickMultiple}`;
-  statusMsg += ` — ${cleanCount} clean (${(cleanPct * 100).toFixed(0)}%)`;
-  if (lowQuality && tickCount > 10) {
-    statusMsg += ' — weak signal, move watch closer to mic';
+  let statusMsg = `${beats} beats over ${duration.toFixed(1)}s — rate ±${rateErr.toFixed(1)} s/d`;
+  let suggestion = null;
+  if (!patternOk) {
+    // The cross-check against other beat rates is costly — once per session
+    if (!liveBphHint || liveBphHint.bph !== bph) {
+      liveBphHint = { bph, suggestion: suggestBph(merged, recordedSampleRate, bph) };
+    }
+    suggestion = liveBphHint.suggestion;
+    statusMsg += ' — ' + bphMismatchText(bph, suggestion);
+  } else if (result.quality < 0.7) {
+    statusMsg += ' — signal keeps dropping out, hold the watch still against the mic';
+  } else if (amplitude === null) {
+    statusMsg += ' — signal too faint for amplitude';
   }
-  if (usedFileAnalysis) statusMsg += ' [audio analysis]';
   $('statusText').textContent = statusMsg;
   $('statusText').className = 'status active';
 
-  // Store for copy button — show whenever we have a result
-  const copyBtn = $('copyLiveBtn');
   copyBtn.style.display = '';
   copyBtn._liveResult = {
-    rate: unreliable ? '---' : `${sign}${rate.toFixed(1)}`,
-    beatError: tickMultiple > 1 ? 'N/A' : beatError.toFixed(2) + 'ms',
-    ampDeg: Math.round(ampDeg),
-    tickCount: tickCount,
+    rate: fmtRate(rate), rateErr: rateErr.toFixed(1),
+    beatError: beatError === null ? 'N/A' : beatError.toFixed(2) + 'ms',
+    amplitude: amplitude === null ? 'N/A' : Math.round(amplitude) + '° (lift angle ' + getLiftAngle() + '°)',
     avgInterval: (avgInterval * 1000).toFixed(3),
-    duration: duration.toFixed(1),
-    cleanCount, cleanPct: (cleanPct * 100).toFixed(0),
-    tickMultiple,
-    bph: parseInt(bphSelect.value)
+    beats, duration: duration.toFixed(1), bph,
+    note: patternOk ? '' : bphMismatchText(bph, suggestion)
   };
 }
 
@@ -1458,6 +1299,7 @@ function updateLiveResults() {
 async function processFiles(files) {
   const bph = parseInt(bphSelect.value);
   const expectedInterval = 3600 / bph;
+  const liftAngle = getLiftAngle();
 
   for (const file of files) {
     $('tipText').style.color = '';
@@ -1472,41 +1314,15 @@ async function processFiles(files) {
       const audioBuf = await decodeCtx.decodeAudioData(arrayBuf);
       decodeCtx.close().catch(()=>{});
 
-      const rawSamples = audioBuf.getChannelData(0);
+      const samples = audioBuf.getChannelData(0);
       const sr = audioBuf.sampleRate;
+      const result = analyzeBeats(samples, sr, expectedInterval, liftAngle);
+      const suggestion = result && result.ok && !result.patternOk ? suggestBph(samples, sr, bph) : null;
 
-      // High-pass filter at 300Hz
-      const rc = 1 / (2 * Math.PI * 300);
-      const dt = 1 / sr;
-      const alpha = rc / (rc + dt);
-      const samples = new Float32Array(rawSamples.length);
-      samples[0] = rawSamples[0];
-      for (let i = 1; i < rawSamples.length; i++) {
-        samples[i] = alpha * (samples[i - 1] + rawSamples[i] - rawSamples[i - 1]);
-      }
-
-      // Analyze file — use windowed analysis for longer recordings
-      const analysis = analyzeFileWindowed(samples, sr, expectedInterval);
-
-      resultsLog.push({
-        name: safeName,
-        bph: bph,
-        duration: audioBuf.duration,
-        tickCount: analysis.result ? analysis.result.tickCount : 0,
-        result: analysis.result,
-        debug: analysis.debug
-      });
-
+      resultsLog.push({ name: safeName, bph, liftAngle, duration: audioBuf.duration, result, suggestion });
     } catch (err) {
       console.error('File error:', err);
-      resultsLog.push({
-        name: safeName,
-        bph: bph,
-        duration: 0,
-        tickCount: 0,
-        result: null,
-        error: err.message
-      });
+      resultsLog.push({ name: safeName, bph, liftAngle, duration: 0, result: null, error: err.message });
     }
   }
 
@@ -1517,6 +1333,12 @@ async function processFiles(files) {
   setTimeout(() => {
     $('logCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, 100);
+}
+
+function noResultText(entry) {
+  return entry.result
+    ? `No clear tick signal in ${entry.duration.toFixed(1)}s — check the beat rate setting and hold the caseback against the mic`
+    : `Recording too short or silent (${entry.duration.toFixed(1)}s) — need at least ${TG.MIN_DURATION} seconds`;
 }
 
 // --- Render results log ---
@@ -1536,34 +1358,31 @@ function renderLog() {
           <span class="result-entry-rate bad">Error</span>
         </div>
         <div class="result-entry-details">${esc(entry.error)}</div>`;
-    } else if (!entry.result) {
+    } else if (!entry.result || !entry.result.ok) {
       div.innerHTML = `
         <div class="result-entry-header">
           <span class="result-entry-name">${entry.name}</span>
           <span class="result-entry-rate" style="color:#6b7a99;">--</span>
         </div>
-        <div class="result-entry-details">${entry.tickCount} ticks in ${entry.duration.toFixed(1)}s — not enough data</div>`;
+        <div class="result-entry-details">${noResultText(entry)}</div>`;
     } else {
       const r = entry.result;
-      const absRate = Math.abs(r.rate);
-      const sign = r.rate >= 0 ? '+' : '';
-      const rateClass = absRate < 5 ? 'good' : absRate < 15 ? 'warn' : 'bad';
-      let note = '';
-      if (r.tickMultiple > 1) {
-        note = `<div class="result-entry-note">Detecting every ${r.tickMultiple}${r.tickMultiple===2?'nd':r.tickMultiple===3?'rd':'th'} beat (weak signal)</div>`;
-      }
+      const notes = [];
+      if (!r.patternOk) notes.push(bphMismatchText(entry.bph, entry.suggestion));
+      if (r.quality < 0.7) notes.push(`Only ${(r.quality * 100).toFixed(0)}% of the recording had a usable tick signal`);
 
       div.innerHTML = `
         <div class="result-entry-header">
           <span class="result-entry-name">${entry.name}</span>
-          <span class="result-entry-rate ${rateClass}">${sign}${r.rate.toFixed(1)} s/d</span>
+          <span class="result-entry-rate ${rateClass(r.rate)}">${fmtRate(r.rate)} s/d</span>
         </div>
         <div class="result-entry-details">
-          ${entry.bph.toLocaleString()} BPH &middot; ${r.tickCount} ticks &middot; ${r.duration.toFixed(1)}s &middot;
-          Beat error: ${r.tickMultiple > 1 ? 'N/A' : r.beatError.toFixed(2) + 'ms'} &middot; Avg: ${(r.avgInterval * 1000).toFixed(3)}ms
+          &plusmn;${r.rateErr.toFixed(1)} s/d &middot; ${entry.bph.toLocaleString()} BPH &middot; ${r.beats} beats &middot; ${r.duration.toFixed(1)}s<br>
+          Beat error: ${r.beatError === null ? 'N/A' : r.beatError.toFixed(2) + 'ms'} &middot;
+          Amplitude: ${r.amplitude === null ? 'N/A' : Math.round(r.amplitude) + '&deg; (lift ' + entry.liftAngle + '&deg;)'} &middot;
+          Avg: ${(r.avgInterval * 1000).toFixed(3)}ms
         </div>
-        ${note}
-        ${entry.debug ? `<div class="result-entry-note">Detection: ${entry.debug}</div>` : ''}`;
+        ${notes.map(n => `<div class="result-entry-note">${n}</div>`).join('')}`;
     }
 
     container.appendChild(div);
@@ -1571,31 +1390,13 @@ function renderLog() {
 }
 
 // --- Copy results as text ---
-function copyResults() {
-  const lines = ['Watch Timegrapher Results', ''];
-  for (const entry of resultsLog) {
-    if (entry.error) {
-      lines.push(`${entry.name}: Error — ${entry.error}`);
-    } else if (!entry.result) {
-      lines.push(`${entry.name}: Not enough data (${entry.tickCount} ticks)`);
-    } else {
-      const r = entry.result;
-      const sign = r.rate >= 0 ? '+' : '';
-      lines.push(`${entry.name}: ${sign}${r.rate.toFixed(1)} s/d | Beat error: ${r.tickMultiple > 1 ? 'N/A' : r.beatError.toFixed(2) + 'ms'} | ${entry.bph.toLocaleString()} BPH | ${r.tickCount} ticks${entry.debug ? ' | ' + entry.debug : ''}`);
-      if (r.tickMultiple > 1) {
-        lines.push(`  (detecting every ${r.tickMultiple}${r.tickMultiple===2?'nd':r.tickMultiple===3?'rd':'th'} beat)`);
-      }
-    }
-  }
-
-  const text = lines.join('\n');
-  navigator.clipboard.writeText(text).then(() => {
-    const btn = $('copyBtn');
+function copyText(text, btn) {
+  const done = () => {
     btn.textContent = 'Copied!';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = 'Copy Results'; btn.classList.remove('copied'); }, 2000);
-  }).catch(() => {
-    // Fallback: select a temporary textarea
+  };
+  const fallback = () => {
     const ta = document.createElement('textarea');
     ta.value = text;
     ta.style.cssText = 'position:fixed;left:-9999px;';
@@ -1603,24 +1404,43 @@ function copyResults() {
     ta.select();
     document.execCommand('copy');
     document.body.removeChild(ta);
-    const btn = $('copyBtn');
-    btn.textContent = 'Copied!';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = 'Copy Results'; btn.classList.remove('copied'); }, 2000);
-  });
+    done();
+  };
+  // navigator.clipboard is missing in insecure contexts / some webviews
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, fallback);
+  else fallback();
 }
 
-// --- Timing dot diagram ---
-function drawDots() {
-  if (ticks.length < 3) return;
+function copyResults() {
+  const lines = ['Watch Timegrapher Results', ''];
+  for (const entry of resultsLog) {
+    if (entry.error) {
+      lines.push(`${entry.name}: Error — ${entry.error}`);
+    } else if (!entry.result || !entry.result.ok) {
+      lines.push(`${entry.name}: ${noResultText(entry)}`);
+    } else {
+      const r = entry.result;
+      lines.push(`${entry.name}: ${fmtRate(r.rate)} s/d (±${r.rateErr.toFixed(1)}) | Beat error: ${r.beatError === null ? 'N/A' : r.beatError.toFixed(2) + 'ms'} | Amplitude: ${r.amplitude === null ? 'N/A' : Math.round(r.amplitude) + '° (lift ' + entry.liftAngle + '°)'} | ${entry.bph.toLocaleString()} BPH | ${r.beats} beats`);
+      if (!r.patternOk) lines.push('  (' + bphMismatchText(entry.bph, entry.suggestion) + ')');
+    }
+  }
+  copyText(lines.join('\n'), $('copyBtn'));
+}
+
+// --- Timing trace ---
+// One dot per beat: how early or late it landed against a perfect watch at
+// the nominal beat rate. A gaining watch climbs, a losing one falls; tick
+// and tock form two lines whose spacing is the beat error.
+function drawTrace() {
+  if (!liveTrace || liveTrace.points.length < 3) return;
   sizeCanvas(dotCanvas);
   const w = dotCanvas.width, h = dotCanvas.height;
+  if (!w || !h) return;
   const midY = h / 2;
-  const expected = getExpectedInterval();
+  const pts = liveTrace.points, T0 = liveTrace.interval;
 
   dotCtx.fillStyle = '#0d1220';
   dotCtx.fillRect(0, 0, w, h);
-
   dotCtx.strokeStyle = '#1e2a42';
   dotCtx.lineWidth = 1;
   dotCtx.beginPath();
@@ -1628,36 +1448,31 @@ function drawDots() {
   dotCtx.lineTo(w, midY);
   dotCtx.stroke();
 
-  const maxDots = Math.floor(w / (4 * devicePixelRatio));
-  const startIdx = Math.max(1, ticks.length - maxDots);
+  const ref = pts[0];
+  const devs = pts.map(p => ((p.t - ref.t) - (p.beat - ref.beat) * T0) * 1000);
+  const center = tgMedian(devs);
+  // Scale to the bulk of the dots so a few stray ones can't flatten the trace
+  const spread = devs.map(d => Math.abs(d - center)).sort((a, b) => a - b);
+  const maxDev = Math.max(0.5, spread[Math.floor((spread.length - 1) * 0.98)] * 1.15);
+  const scale = (h * 0.42) / maxDev;
+  const tMin = ref.t, tSpan = Math.max(1e-6, pts[pts.length - 1].t - tMin);
+  const pad = 6 * devicePixelRatio;
 
-  const deviations = [];
-  for (let i = startIdx; i < ticks.length; i++) {
-    const interval = ticks[i] - ticks[i - 1];
-    deviations.push((interval - expected) * 1000);
-  }
-
-  if (deviations.length === 0) return;
-
-  const maxDev = Math.max(0.5, ...deviations.map(d => Math.abs(d)));
-  const scale = (h * 0.4) / maxDev;
-  const xStep = w / (deviations.length + 1);
-
-  for (let i = 0; i < deviations.length; i++) {
-    const x = xStep * (i + 1);
-    const y = midY - deviations[i] * scale;
-    const absDev = Math.abs(deviations[i]);
-    dotCtx.fillStyle = absDev < 0.05 ? '#00e676' : absDev < 0.2 ? '#ffab00' : '#ff4466';
+  for (let i = 0; i < pts.length; i++) {
+    const x = pad + (pts[i].t - tMin) / tSpan * (w - 2 * pad);
+    const d = Math.max(-maxDev, Math.min(maxDev, devs[i] - center));
+    const y = midY + d * scale; // arriving early (gaining) plots upward
+    dotCtx.fillStyle = pts[i].tock ? '#ffab00' : '#00d4ff';
     dotCtx.beginPath();
-    dotCtx.arc(x, y, 2.5 * devicePixelRatio, 0, Math.PI * 2);
+    dotCtx.arc(x, y, 1.6 * devicePixelRatio, 0, Math.PI * 2);
     dotCtx.fill();
   }
 
   dotCtx.fillStyle = '#4a5a7a';
   dotCtx.font = `${10 * devicePixelRatio}px sans-serif`;
   dotCtx.textAlign = 'left';
-  dotCtx.fillText(`+${maxDev.toFixed(2)}ms`, 4 * devicePixelRatio, 14 * devicePixelRatio);
-  dotCtx.fillText(`-${maxDev.toFixed(2)}ms`, 4 * devicePixelRatio, h - 6 * devicePixelRatio);
+  dotCtx.fillText(`gaining ${maxDev.toFixed(2)}ms`, 4 * devicePixelRatio, 12 * devicePixelRatio);
+  dotCtx.fillText(`losing ${maxDev.toFixed(2)}ms`, 4 * devicePixelRatio, h - 5 * devicePixelRatio);
 }
 
 // --- Events ---
@@ -1681,6 +1496,17 @@ resetBtn.addEventListener('click', function(e) {
   resetMic();
 });
 
+// Settings are only reachable while stopped: re-run the last capture so a
+// corrected beat rate or lift angle shows up without recording again.
+function reanalyzeCapture() {
+  if (isRecording || !recordedLen) return;
+  liveBphHint = null;
+  updateLiveResults();
+  drawTrace();
+}
+bphSelect.addEventListener('change', reanalyzeCapture);
+liftSlider.addEventListener('change', reanalyzeCapture);
+
 $('copyBtn').addEventListener('click', function(e) {
   e.preventDefault();
   copyResults();
@@ -1693,29 +1519,15 @@ $('copyLiveBtn').addEventListener('click', function(e) {
   const lines = [
     'Watch Timegrapher — Live Mic',
     '',
-    `Rate: ${r.rate} s/d`,
+    `Rate: ${r.rate} s/d (±${r.rateErr})`,
     `Beat error: ${r.beatError}`,
+    `Amplitude: ${r.amplitude}`,
     `Avg interval: ${r.avgInterval}ms`,
-    `${r.tickCount} ticks over ${r.duration}s — ${r.cleanCount} clean (${r.cleanPct}%)`,
-    `${r.bph.toLocaleString()} BPH` + (r.tickMultiple > 1 ? ` (N=${r.tickMultiple})` : '')
+    `${r.beats} beats over ${r.duration}s`,
+    `${r.bph.toLocaleString()} BPH`
   ];
-  const text = lines.join('\n');
-  navigator.clipboard.writeText(text).then(() => {
-    this.textContent = 'Copied!';
-    this.classList.add('copied');
-    setTimeout(() => { this.textContent = 'Copy Results'; this.classList.remove('copied'); }, 2000);
-  }).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.cssText = 'position:fixed;left:-9999px;';
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    this.textContent = 'Copied!';
-    this.classList.add('copied');
-    setTimeout(() => { this.textContent = 'Copy Results'; this.classList.remove('copied'); }, 2000);
-  });
+  if (r.note) lines.push(r.note);
+  copyText(lines.join('\n'), this);
 });
 
 $('clearLogBtn').addEventListener('click', function(e) {
@@ -1730,13 +1542,10 @@ const defaultTip = `<strong>Phone:</strong> Place caseback directly on the phone
 
 function resetMic() {
   stopMic(true);
-  ticks = [];
-  tickAmplitudes = [];
-  lastTickTime = 0;
-  cooldownUntil = 0;
-  noiseRMS = 0;
-  carryBuf = null;
   recordedAudio = [];
+  recordedLen = 0;
+  liveTrace = null;
+  liveBphHint = null;
   $('rateVal').textContent = '--';
   $('rateVal').className = 'result-value';
   $('beatErrVal').textContent = '--';
